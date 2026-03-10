@@ -1,0 +1,12 @@
+# 编译产物（可从源码重建）
+build/openssl/
+build/zlib/
+build/libffi/
+build/python/
+build/python-host.tar.gz
+
+# 源码 tarball（可从网上下载）
+sources/
+
+# 最终二进制（可从源码重编）
+build/python3-ohos

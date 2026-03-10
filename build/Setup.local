@@ -1,0 +1,31 @@
+zlib zlibmodule.c -I/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/zlib/include -L/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/zlib/lib -lz
+_ssl _ssl.c -I/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/openssl/include -L/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/openssl/lib -lssl -lcrypto
+_hashlib _hashopenssl.c -I/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/openssl/include -L/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/openssl/lib -lssl -lcrypto
+_socket socketmodule.c
+binascii binascii.c -DUSE_ZLIB_CRC32 -I/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/zlib/include -L/home/lmxxf/work/openclaw_on_openharmony/LangChain/build/zlib/lib -lz
+select selectmodule.c
+_struct _struct.c
+_json _json.c
+_datetime _datetimemodule.c
+math mathmodule.c
+_random _randommodule.c
+_sha256 sha256module.c
+_sha512 sha512module.c
+_sha1 sha1module.c
+_sha3 _sha3/sha3module.c
+_md5 md5module.c
+_pickle _pickle.c
+_asyncio _asynciomodule.c
+_bisect _bisectmodule.c
+_heapq _heapqmodule.c
+_csv _csv.c
+_posixsubprocess _posixsubprocess.c
+_contextvars _contextvarsmodule.c
+_typing _typingmodule.c
+_queue _queuemodule.c
+array arraymodule.c
+fcntl fcntlmodule.c
+mmap mmapmodule.c
+_opcode _opcode.c
+_statistics _statisticsmodule.c
+unicodedata unicodedata.c
