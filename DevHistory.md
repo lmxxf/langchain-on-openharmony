@@ -569,15 +569,147 @@ pydantic_core 运行时需要 `typing_extensions`（纯 Python），直接下载
 └── cacert.pem
 ```
 
-### 下一步
+---
 
-- [x] pydantic-core 2.41.5 交叉编译 + 板子验证
-- [ ] 安装 pydantic（纯 Python 包）
-- [ ] 交叉编译 cryptography（Rust + OpenSSL）
-- [ ] 安装 LangChain 依赖链（大部分纯 Python）
-- [ ] LangChain hello world：`ChatDeepSeek(...).invoke("hello")`
+## 2026-03-11 20:22 LangChain 全链路打通 🔥
 
-### Rust 交叉编译通用模板（以后编别的 Rust 扩展照搬）
+### 依赖链分析
+
+langchain-core 1.2.18 的完整依赖树：
+
+**需要交叉编译的（C/Rust 扩展）：**
+
+| 包 | 版本 | 底层 | 编译方式 |
+|---|---|---|---|
+| pydantic-core | 2.41.5 | Rust/maturin | 同模板 |
+| uuid-utils | 0.14.1 | Rust/maturin | 同模板 |
+| jiter | 0.13.0 | Rust/maturin | 同模板 |
+| xxhash | 3.6.0 | C | 手动 clang 编译（2 个 .c 文件） |
+
+**有纯 Python fallback 不用编的：**
+
+| 包 | 说明 |
+|---|---|
+| orjson | langsmith 有完整 `json` fallback（`_orjson.py`） |
+| zstandard | langsmith 压缩传输用，没有就不压缩 |
+| pyyaml | 没有 libyaml 自动用纯 Python 解析器 |
+| charset-normalizer | requests 能 fallback |
+
+**纯 Python 包（直接丢进去）：**
+
+pydantic, langchain-core, langsmith, openai, langchain-openai, httpx, httpcore, anyio, requests, requests-toolbelt, urllib3, certifi, idna, h11, sniffio, jsonpatch, jsonpointer, packaging, tenacity, typing-extensions, typing-inspection, annotated-types, distro, tqdm
+
+### 额外的 Rust 交叉编译
+
+uuid-utils 和 jiter 都是 maturin 项目，和 pydantic-core 完全一样的模板：
+
+```bash
+# uuid-utils
+cd sources/uuid-utils
+RUSTFLAGS="-L <libpython路径> -l python3.11" \
+maturin build --target aarch64-unknown-linux-ohos --release --interpreter python3.11 --skip-auditwheel
+
+# jiter
+cd sources/jiter/crates/jiter-python
+RUSTFLAGS="-L <libpython路径> -l python3.11" \
+maturin build --target aarch64-unknown-linux-ohos --release --interpreter python3.11 --skip-auditwheel
+```
+
+### xxhash C 扩展手动编译
+
+xxhash 是 C 扩展（setup.py），源码内嵌了 xxhash.c，一行命令编完：
+
+```bash
+$CC -shared -fPIC -O2 \
+  -I$PYTHON_INC -I sources/xxhash/deps/xxhash \
+  -L$PYTHON_LIB -lpython3.11 \
+  -o _xxhash.cpython-311-aarch64-linux-ohos.so \
+  sources/xxhash/src/_xxhash.c sources/xxhash/deps/xxhash/xxhash.c
+```
+
+注意：`.so` 要放到 `xxhash/` 包目录内（不是 site-packages 根目录），因为包内 `from xxhash._xxhash import ...`。
+
+### 踩坑记录
+
+| 坑 | 原因 | 解法 |
+|---|---|---|
+| `No module named 'typing_extensions'` | pydantic_core 运行时依赖 | 下载 .py 丢进 site-packages |
+| `No module named 'typing_inspection'` | pydantic v2 新增依赖 | 同上 |
+| `No module named 'annotated_types'` | pydantic v2 依赖 | 同上 |
+| `No module named '_sysconfigdata__linux_aarch64-linux-ohos'` | 之前推标准库时漏了这个文件 | 从 build 产物里补推 |
+| `No module named 'xxhash._xxhash'` | .so 放错目录（在 site-packages 根目录） | 移到 `xxhash/` 包目录内 |
+| `No module named 'tiktoken'` | langchain-openai 硬依赖 tiktoken（Rust 扩展） | 绕过：直接用 openai SDK + langchain-core 消息类型 |
+| API key 401 | 用了旧 key | 换正确的 key |
+
+### 板子上验证通过 ✅✅✅
+
+```
+$ LD_LIBRARY_PATH=/data/local/tmp/lib \
+  PYTHONHOME=/data/local/tmp/python-home \
+  SSL_CERT_FILE=/data/local/tmp/cacert.pem \
+  /data/local/tmp/python-home/bin/python3.11 test_langchain_llm.py
+
+Python: 3.11.11 [Clang 15.0.4]
+langchain-core: OK
+openai SDK: OK
+Calling DeepSeek via OpenAI SDK...
+Response: Hello, it's a pleasure to meet you.
+Type: AIMessage
+
+=== LangChain + OpenAI SDK on OpenHarmony: SUCCESS ===
+```
+
+**全链路：OH RK3568 → Python 3.11 → pydantic 2.12.5 → langchain-core 1.2.18 → openai SDK → HTTPS/TLS → DeepSeek API → AIMessage**
+
+### 最终部署结构
+
+```
+/data/local/tmp/
+├── python-home/
+│   ├── bin/python3.11
+│   └── lib/python3.11/
+│       ├── site-packages/
+│       │   ├── pydantic_core/          # Rust .so (4.4MB)
+│       │   ├── pydantic/               # 纯 Python
+│       │   ├── langchain_core/         # 纯 Python
+│       │   ├── langchain_openai/       # 纯 Python
+│       │   ├── openai/                 # 纯 Python
+│       │   ├── langsmith/              # 纯 Python
+│       │   ├── uuid_utils/             # Rust .so
+│       │   ├── jiter/                  # Rust .so
+│       │   ├── xxhash/                 # C .so
+│       │   │   └── _xxhash.cpython-311-aarch64-linux-ohos.so
+│       │   ├── httpx/                  # 纯 Python
+│       │   ├── httpcore/               # 纯 Python
+│       │   ├── requests/               # 纯 Python
+│       │   ├── typing_extensions.py
+│       │   ├── typing_inspection/
+│       │   ├── annotated_types/
+│       │   └── ...（其他纯 Python 包）
+│       ├── lib-dynload/                # 64 个 CPython .so
+│       ├── _sysconfigdata__linux_aarch64-linux-ohos.py
+│       └── ...
+├── lib/
+│   ├── libpython3.11.so.1.0
+│   ├── libcrypto.so.3
+│   ├── libssl.so.3
+│   └── ...
+└── cacert.pem
+```
+
+### 完成状态
+
+- [x] OpenSSL 3.3.2 交叉编译（shared .so）
+- [x] zlib 1.3.1 交叉编译（-fPIC）
+- [x] CPython 3.11.11 动态链接版（64 个 .so 模块）
+- [x] pydantic-core 2.41.5（Rust 交叉编译）
+- [x] uuid-utils 0.14.1（Rust 交叉编译）
+- [x] jiter 0.13.0（Rust 交叉编译）
+- [x] xxhash 3.6.0（C 交叉编译）
+- [x] LangChain 全依赖链安装（纯 Python 包 + 上述扩展）
+- [x] **DeepSeek API 通过 LangChain + OpenAI SDK 调用成功**
+
+### Rust 交叉编译通用模板
 
 ```bash
 # 1. cargo config（一次性）
@@ -602,11 +734,16 @@ maturin build \
 
 ### 最终目标
 
-**把最新版本的 LangChain 在 RK3568 的 OpenHarmony 6.0 上跑通。**
+**把最新版本的 LangChain 在 RK3568 的 OpenHarmony 6.0 上跑通。** ✅ 已完成。
 
 ### 当前状态
 
-动态链接 CPython 3.11.11 + pydantic-core 2.41.5 已在 RK3568 上跑通。**下一步是装 pydantic + 编 cryptography + 装 LangChain。**
+**LangChain + OpenAI SDK + DeepSeek API 全链路在 RK3568 OH 6.0 上跑通。** langchain-core 1.2.18 + pydantic 2.12.5 + openai SDK，通过 HTTPS 调 DeepSeek API 成功。
+
+### 已知限制
+
+- `langchain-openai` 的 `ChatOpenAI` 硬依赖 tiktoken（Rust 扩展），暂未编译。当前用 openai SDK 直接调用 + langchain-core 消息类型绕过。
+- 如需 `ChatOpenAI`，需额外交叉编译 tiktoken。
 
 ### 运行命令模板
 
@@ -629,4 +766,4 @@ maturin build --target aarch64-unknown-linux-ohos --release --interpreter python
 *OH 工程路径: `/home/lmxxf/oh6/source`*
 *GitHub: https://github.com/lmxxf/langchain-on-openharmony*
 *项目路径: `/home/lmxxf/work/openclaw_on_openharmony/LangChain/`*
-*pydantic-core 源码: `sources/pydantic-core/`*
+*源码: `sources/pydantic-core/`, `sources/uuid-utils/`, `sources/jiter/`, `sources/xxhash/`*

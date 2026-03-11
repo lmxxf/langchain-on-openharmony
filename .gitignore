@@ -19,3 +19,6 @@ build/pyconfig.h.patched
 
 # 源码（tarball 可从网上下，解压目录不提交）
 sources/
+
+# API key
+.api-key
