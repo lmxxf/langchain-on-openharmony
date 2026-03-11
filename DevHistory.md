@@ -334,16 +334,166 @@ PYTHONHOME=/data/local/tmp/python-home SSL_CERT_FILE=/data/local/tmp/cacert.pem 
 
 重建步骤见 README.md。核心是解压源码 → 用 patched configure → 用 patched pyconfig.h → 用 Setup.local → make。
 
-### 下一步技术要点（pydantic-core）
+### 下一步
 
-- pydantic-core 是 Rust 写的，需要 Rust 交叉编译到 `aarch64-unknown-linux-ohos`
-- 需要：rustup target add（可能需要自定义 target spec，因为 ohos 不是 Rust 标准 target）
-- 编出来的 .so 无法被静态 python 加载（dlopen 不可用）
-- **可能的思路**：用纯 Python 版的 pydantic（v1 是纯 Python，v2 依赖 pydantic-core）
-- **或者**：把 pydantic-core 的 Rust 代码编成 .a 链接进 python？（非常规，需要研究）
-- **或者**：放弃静态链接，改用动态链接的 python（能 dlopen，但需要处理 ld-musl-namespace）
+- [ ] 交叉编译 pydantic-core（Rust → aarch64-unknown-linux-ohos，Rust 官方 Tier 2 target）
+- [ ] 交叉编译 cryptography（Rust + OpenSSL）
+- [ ] pip install langchain-core 最小集验证
+- [ ] 跑 LangChain hello world（通过 LangChain 框架调 LLM）
 
-这是下一关的核心难题，需要先调研再动手。
+---
+
+## 2026-03-11 动态链接 CPython 重编
+
+### 背景
+
+静态链接的 CPython 不能 dlopen .so 文件，无法加载 pydantic-core（Rust 扩展）。LangChain 最新版（v0.3+）强制依赖 pydantic v2，pydantic v2 强制依赖 pydantic-core（Rust .so），没有纯 Python fallback。
+
+**结论：必须重编 CPython 为动态链接版本。**
+
+### 关键发现
+
+1. **ld-musl-namespace 不是障碍**：OH 的命名空间配置文件 `ld-musl-namespace-aarch64.ini` 中，`/data/local/tmp` 走 `acquiescence` 命名空间，没有隔离限制。`LD_LIBRARY_PATH` 直接能用。**之前选静态链接是为了绕 namespace，现在发现根本不需要绕。**
+
+2. **Rust 交叉编译 OHOS 是官方支持的**：`aarch64-unknown-linux-ohos` 是 Rust Tier 2 target，`rustup target add` 直接可用。
+
+3. **OH 官方有 CPython 交叉编译 patch**：`third_party/python/patches/cross_compile_support_ohos.patch`，修了 `config.sub` 识别 `ohos`。
+
+### 编译过程
+
+#### 编译产物
+
+| 组件 | 版本 | 产物 | 说明 |
+|------|------|------|------|
+| OpenSSL | 3.3.2 | `build/openssl-shared/lib/libssl.so.3 + libcrypto.so.3` | **必须编 shared**，static .a 链进 .so 时 segfault |
+| zlib | 1.3.1 | `build/zlib-pic/lib/libz.a` | 加了 `-fPIC` |
+| CPython | 3.11.11 | `build/python-dynamic/` | `--enable-shared`，64 个 .so 扩展模块 |
+
+#### 踩坑记录
+
+| 坑 | 原因 | 解法 |
+|---|---|---|
+| `getaddrinfo` 检测失败 | 交叉编译不能运行目标程序 | `ac_cv_buggy_getaddrinfo=no` |
+| setup.py 禁了 `_socket`, `zlib`, `binascii` | OH patch 的 `DISABLED_MODULE_LIST` | 改成只禁 `_uuid` |
+| 所有 .so 模块 "Failed to build" | setup.py 交叉编译时在宿主机 import aarch64 .so 当然失败 | **假报错**，.so 文件实际上都编好了 |
+| OpenSSL static .a 链进 .so → segfault | 不是 PIC 问题，是模块化加载的 ABI 问题 | **OpenSSL 必须编 shared（.so）** |
+| `_sha256`, `_sha1`, `_sha3` 等 segfault | Setup.stdlib 编的模块不经过 setup.py，没链 `-lpython3.11` | Makefile 的 `BLDSHARED` 加 `-L. -lpython3.11` |
+| `_md5`, `_blake2` OK 但 `_sha256` crash | setup.py 编的模块有 OH patch 加的 `-lpython3.11`，Makefile 编的没有 | 同上 |
+
+#### 核心 Bug：.so 模块必须链接 libpython
+
+**这是最关键的发现。** CPython 3.11 的 C 扩展模块在 Linux 上通常不需要显式链接 libpython（因为符号由 python 进程自己导出）。但在 OHOS 上，**musl 的 dlopen 不会自动从调用者继承符号**——每个 .so 必须显式声明自己的依赖。
+
+修复方法：在 Makefile 里把 `BLDSHARED` 改成：
+```
+BLDSHARED = $(CC) -shared $(PY_CORE_LDFLAGS) -L. -lpython3.11
+```
+
+### 板子上验证通过 ✅
+
+```
+$ LD_LIBRARY_PATH=/data/local/tmp/lib \
+  PYTHONHOME=/data/local/tmp/python-home \
+  SSL_CERT_FILE=/data/local/tmp/cacert.pem \
+  /data/local/tmp/python-home/bin/python3.11 test_dynamic.py
+
+Python 3.11.11 [Clang 15.0.4]
+math.pi = 3.141592653589793
+json OK
+_struct OK
+select OK
+ssl: OpenSSL 3.3.2 3 Sep 2024
+socket OK
+ALL DYNAMIC IMPORTS OK!
+```
+
+DeepSeek LLM API 调用成功 ✅
+
+### 部署结构（动态版）
+
+```
+/data/local/tmp/
+├── python-home/
+│   ├── bin/python3.11              # 4.8KB 动态链接 launcher
+│   └── lib/python3.11/
+│       ├── lib-dynload/            # 64 个 .so 扩展模块
+│       │   ├── _ssl.cpython-311-aarch64-linux-ohos.so
+│       │   ├── _json.cpython-311-aarch64-linux-ohos.so
+│       │   ├── math.cpython-311-aarch64-linux-ohos.so
+│       │   └── ...
+│       ├── encodings/
+│       ├── email/
+│       ├── http/
+│       └── ...
+├── lib/
+│   ├── libpython3.11.so.1.0       # 4.8MB Python 主库
+│   ├── libpython3.11.so → ...
+│   ├── libcrypto.so.3              # 4.2MB OpenSSL
+│   ├── libssl.so.3                 # 836KB OpenSSL
+│   └── 软链 ...
+├── cacert.pem                      # Mozilla CA 证书包
+├── test_llm.py
+└── test_dynamic.py
+```
+
+### 运行命令模板
+
+```bash
+LD_LIBRARY_PATH=/data/local/tmp/lib \
+PYTHONHOME=/data/local/tmp/python-home \
+SSL_CERT_FILE=/data/local/tmp/cacert.pem \
+/data/local/tmp/python-home/bin/python3.11 xxx.py
+```
+
+### 持久化文件
+
+```
+LangChain/
+├── sources/
+│   ├── Python-3.11.11.tgz          # CPython 源码包
+│   ├── Python-3.11.11/             # 打过 OH patch 的源码
+│   ├── openssl-3.3.2.tar.gz
+│   ├── openssl-3.3.2/
+│   └── zlib-1.3.1.tar.gz
+├── build/
+│   ├── python-dynamic/             # make install 产物（完整部署包）
+│   ├── openssl-shared/             # OpenSSL shared 库
+│   ├── zlib-pic/                   # zlib with -fPIC
+│   ├── openssl/                    # （旧）静态 OpenSSL
+│   ├── zlib/                       # （旧）静态 zlib
+│   ├── libffi/                     # libffi
+│   ├── ohos-cc.sh                  # 编译器 wrapper
+│   ├── ohos-cxx.sh
+│   └── python-host.tar.gz          # 宿主机 Python bootstrap
+├── scripts/
+│   ├── configure-dynamic.sh        # CPython 动态版 configure 脚本
+│   ├── build-openssl-shared.sh     # OpenSSL shared 编译脚本
+│   └── build-openssl-pic.sh        # OpenSSL PIC 编译脚本（没用上）
+└── DevHistory.md
+```
+
+### 下一步：pydantic-core（Rust 交叉编译）
+
+现在 dlopen 能用了，下一步是：
+1. `rustup target add aarch64-unknown-linux-ohos`
+2. 配置 cargo 使用 OH 的 clang
+3. 用 `maturin build --target aarch64-unknown-linux-ohos` 编译 pydantic-core
+4. 得到 `_pydantic_core.cpython-311-aarch64-linux-ohos.so`
+5. 丢进板子的 site-packages，`import pydantic` 验证
+
+---
+
+## 新 Session 恢复指南
+
+**下次开 session 时让朱雀读这个文件，就能接上。**
+
+### 最终目标
+
+**把最新版本的 LangChain 在 RK3568 的 OpenHarmony 6.0 上跑通。**
+
+### 当前状态
+
+动态链接 CPython 3.11.11 已在 RK3568 上跑通，dlopen .so 模块正常，HTTPS + DeepSeek API 正常。**下一步是交叉编译 pydantic-core（Rust）然后装 LangChain。**
 
 ---
 
