@@ -9,7 +9,7 @@ OH RK3568 → CPython 3.11.11 → pydantic 2.12.5 → langchain-core 1.2.18
 
 ## 快速部署（已有编译产物）
 
-适用场景：换台机器，clone 下来，把已编好的产物推到 OH 开发板。
+适用场景：clone 下来，3 条命令把 LangChain 跑在 OH 开发板上。
 
 ### 前提
 
@@ -18,36 +18,14 @@ OH RK3568 → CPython 3.11.11 → pydantic 2.12.5 → langchain-core 1.2.18
 
 ### 步骤
 
-**1. 组装部署目录**
+**1. 解压部署包**
 
-编译产物散在 `build/` 的多个位置，先在宿主机上拼成完整的部署结构：
+`build/langchain-ohos-deploy.tar.gz`（25MB）包含全部编译产物：CPython 3.11 + OpenSSL + LangChain 全依赖链。
 
 ```bash
 cd LangChain/
-mkdir -p deploy/lib
-
-# CPython 解释器 + 标准库
-cp -r build/python-dynamic/data/local/tmp/python-home deploy/
-
-# 共享库
-cp build/python-dynamic/data/local/tmp/python-home/lib/libpython3.11.so.1.0 deploy/lib/
-ln -sf libpython3.11.so.1.0 deploy/lib/libpython3.11.so
-ln -sf libpython3.11.so.1.0 deploy/lib/libpython3.so
-cp build/openssl-shared/lib/libssl.so.3 deploy/lib/
-cp build/openssl-shared/lib/libcrypto.so.3 deploy/lib/
-ln -sf libssl.so.3 deploy/lib/libssl.so
-ln -sf libcrypto.so.3 deploy/lib/libcrypto.so
-
-# LangChain 依赖包（Rust/C 扩展 + 纯 Python 包）
-mkdir -p deploy/python-home/lib/python3.11/site-packages
-cd deploy/python-home/lib/python3.11/site-packages
-tar xzf ../../../../../build/pydantic_core_ohos_v2.tar.gz
-tar xzf ../../../../../build/langchain-deps.tar.gz
-tar xzf ../../../../../build/langchain-deps2.tar.gz
-tar xzf ../../../../../build/deps-batch2.tar.gz
-tar xzf ../../../../../build/deps-batch3.tar.gz
-tar xzf ../../../../../build/typing_inspection.tar.gz
-cd ../../../../..
+mkdir -p deploy
+tar xzf build/langchain-ohos-deploy.tar.gz -C deploy/
 
 # CA 证书（HTTPS 必须）
 wget -q https://curl.se/ca/cacert.pem -O deploy/cacert.pem
@@ -56,10 +34,11 @@ wget -q https://curl.se/ca/cacert.pem -O deploy/cacert.pem
 **2. 推到板子**
 
 ```bash
-# 打包推送（比逐个文件快）
-tar czf deploy.tar.gz -C deploy .
-hdc file send deploy.tar.gz /data/local/tmp/deploy.tar.gz
-hdc shell "cd /data/local/tmp && tar xzf deploy.tar.gz && rm deploy.tar.gz"
+hdc file send build/langchain-ohos-deploy.tar.gz /data/local/tmp/langchain-ohos-deploy.tar.gz
+hdc shell "cd /data/local/tmp && tar xzf langchain-ohos-deploy.tar.gz && rm langchain-ohos-deploy.tar.gz"
+
+# CA 证书
+hdc file send deploy/cacert.pem /data/local/tmp/cacert.pem
 ```
 
 **3. 验证**

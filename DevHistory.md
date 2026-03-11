@@ -728,6 +728,44 @@ maturin build \
 
 ---
 
+## 2026-03-12 部署包整理
+
+### 背景
+
+之前编译产物散落在 `build/` 各处，推板子时是手动一坨一坨 hdc 推的，打包也有重叠有遗漏。README 的"快速部署"引用的目录全在 .gitignore 里——clone 下来根本跑不通。
+
+### 整理
+
+把所有编译产物合并成一个完整部署包 `build/langchain-ohos-deploy.tar.gz`（25MB），提交进 git。
+
+**打包内容：**
+
+| 内容 | 说明 |
+|------|------|
+| `python-home/bin/python3.11` | 动态链接 CPython 解释器 |
+| `python-home/lib/python3.11/` | 标准库（去掉 test/、idlelib、tkinter 等，57MB→压缩15MB） |
+| `python-home/lib/python3.11/site-packages/` | LangChain 全依赖链（纯 Python + Rust/C 扩展） |
+| `python-home/lib/libpython3.11.so.1.0` | Python 主库 4.8MB |
+| `lib/libssl.so.3 + libcrypto.so.3` | OpenSSL 5.1MB |
+| pydantic-core, jiter, uuid-utils, xxhash | 4 个交叉编译的 Rust/C .so |
+
+**清理掉的垃圾：**
+- `python-home/lib/python3.11/test/`（122MB）
+- `idlelib/`, `tkinter/`, `turtledemo/`, `lib2to3/`, `ensurepip/`
+- `_test*.so`, `xx*.so`（测试用模块）
+- 全部 `__pycache__/`
+
+**合并的散装包：**
+- `pydantic_core_ohos_v2.tar.gz` → 合入
+- `langchain-deps.tar.gz` / `langchain-deps2.tar.gz` → 合入（两个是重复的）
+- `deps-batch2.tar.gz` → 合入
+- `deps-batch3.tar.gz` → 合入
+- `typing_inspection.tar.gz` → 合入
+
+**修复：** xxhash 的 `_xxhash.so` 从 site-packages 根目录移到 `xxhash/` 包目录内。
+
+---
+
 ## 新 Session 恢复指南
 
 **下次开 session 时让朱雀读这个文件，就能接上。**
@@ -739,6 +777,8 @@ maturin build \
 ### 当前状态
 
 **LangChain + OpenAI SDK + DeepSeek API 全链路在 RK3568 OH 6.0 上跑通。** langchain-core 1.2.18 + pydantic 2.12.5 + openai SDK，通过 HTTPS 调 DeepSeek API 成功。
+
+部署包 `build/langchain-ohos-deploy.tar.gz`（25MB）已提交进 git，clone 即可用。
 
 ### 已知限制
 

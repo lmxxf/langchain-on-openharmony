@@ -12,13 +12,22 @@ build/python-host.tar.gz
 # 旧的静态二进制
 build/python3-ohos
 
-# 旧的静态版配置（已被动态版取代）
-build/Setup.local
-build/configure.patched
-build/pyconfig.h.patched
+# 旧的散装依赖包（已合并到 langchain-ohos-deploy.tar.gz）
+build/deps-batch2.tar.gz
+build/deps-batch3.tar.gz
+build/langchain-deps.tar.gz
+build/langchain-deps2.tar.gz
+build/pydantic_core_ohos.tar.gz
+build/typing_inspection.tar.gz
+
+# 部署包（保留提交！）
+!build/langchain-ohos-deploy.tar.gz
 
 # 源码（tarball 可从网上下，解压目录不提交）
 sources/
+
+# 临时文件
+deploy/
 
 # API key
 .api-key
