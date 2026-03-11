@@ -343,7 +343,7 @@ PYTHONHOME=/data/local/tmp/python-home SSL_CERT_FILE=/data/local/tmp/cacert.pem 
 
 ---
 
-## 2026-03-11 动态链接 CPython 重编
+## 2026-03-11 上午 动态链接 CPython 重编
 
 ### 背景
 
@@ -472,14 +472,127 @@ LangChain/
 └── DevHistory.md
 ```
 
-### 下一步：pydantic-core（Rust 交叉编译）
+---
 
-现在 dlopen 能用了，下一步是：
-1. `rustup target add aarch64-unknown-linux-ohos`
-2. 配置 cargo 使用 OH 的 clang
-3. 用 `maturin build --target aarch64-unknown-linux-ohos` 编译 pydantic-core
-4. 得到 `_pydantic_core.cpython-311-aarch64-linux-ohos.so`
-5. 丢进板子的 site-packages，`import pydantic` 验证
+## 2026-03-11 19:56 pydantic-core Rust 交叉编译
+
+### 背景
+
+LangChain v0.3+ → pydantic v2 → pydantic-core（Rust .so）。这是"99% 的人卡住的地方"——PyPI 上没有 ohos 平台的 wheel，pip install 只能装到 LangChain 0.0.x 远古版本。
+
+### 环境准备
+
+| 组件 | 版本 | 说明 |
+|------|------|------|
+| Rust | 1.94.0 | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| OHOS target | aarch64-unknown-linux-ohos | `rustup target add`，Rust Tier 2 官方支持 |
+| maturin | 1.12.6 | `pip3 install maturin`，Python Rust 扩展构建工具 |
+| pydantic-core | 2.41.5 | `git clone --depth 1 https://github.com/pydantic/pydantic-core.git` |
+
+### cargo 配置
+
+```toml
+# ~/.cargo/config.toml
+[target.aarch64-unknown-linux-ohos]
+linker = "/mnt/c/Users/lmxxf/openclaw_on_openharmony/LangChain/build/ohos-cc.sh"
+```
+
+### 编译命令
+
+```bash
+cd sources/pydantic-core
+
+RUSTFLAGS="-L /mnt/c/Users/lmxxf/openclaw_on_openharmony/LangChain/build/python-dynamic/data/local/tmp/python-home/lib -l python3.11" \
+maturin build --target aarch64-unknown-linux-ohos --release --interpreter python3.11 --skip-auditwheel
+```
+
+### 编译产物
+
+| 产物 | 大小 | 说明 |
+|------|------|------|
+| `_pydantic_core.cpython-311-aarch64-linux-ohos.so` | 4.4MB | Rust 编译的核心引擎 |
+| `pydantic_core/__init__.py` + `core_schema.py` | 纯 Python | 包装层 |
+
+wheel 路径：`sources/pydantic-core/target/wheels/pydantic_core-2.41.5-cp311-cp311-linux_aarch64.whl`
+
+### 踩坑记录
+
+| 坑 | 原因 | 解法 |
+|---|---|---|
+| 第一次编译 `maturin build` 报 `Invalid python interpreter version` | 宿主机是 Python 3.10，没指定目标版本 | `--interpreter python3.11` |
+| import 报 `PyInterpreterState_Get: symbol not found` | **OHOS musl dlopen 老朋友**——.so 没链 libpython，musl 不继承进程符号 | `RUSTFLAGS="-L <libpython路径> -l python3.11"` |
+| maturin 报 `Failed to execute 'patchelf'` | maturin 想把依赖库打包进 wheel（auditwheel 修复），板子上已有这些库不需要 | `--skip-auditwheel` |
+
+### 核心发现：OHOS 上所有 Python C/Rust 扩展都必须显式链接 libpython
+
+这是第二次碰到同一个根因了（第一次是 CPython 自己的 .so 模块）。**在 OHOS 上，无论是 C 扩展还是 Rust 扩展，编出来的 .so 必须显式声明依赖 libpython3.11.so。** 这是 OHOS musl 的 dlopen 行为决定的，和标准 Linux glibc 不同。
+
+以后编 cryptography 等其他 Rust 扩展时，同样需要加这个 RUSTFLAGS。
+
+### 板子上验证通过 ✅
+
+```
+$ LD_LIBRARY_PATH=/data/local/tmp/lib \
+  PYTHONHOME=/data/local/tmp/python-home \
+  /data/local/tmp/python-home/bin/python3.11 test_pydantic.py
+
+Python: 3.11.11 [Clang 15.0.4]
+pydantic_core imported OK!
+VERSION: 2.41.5
+```
+
+### 依赖补充
+
+pydantic_core 运行时需要 `typing_extensions`（纯 Python），直接下载 .py 丢进 site-packages 即可。
+
+### 部署更新
+
+```
+/data/local/tmp/
+├── python-home/
+│   └── lib/python3.11/
+│       ├── site-packages/
+│       │   ├── pydantic_core/
+│       │   │   ├── __init__.py
+│       │   │   ├── _pydantic_core.cpython-311-aarch64-linux-ohos.so  # 4.4MB
+│       │   │   ├── core_schema.py
+│       │   │   └── _pydantic_core.pyi
+│       │   ├── pydantic_core-2.41.5.dist-info/
+│       │   └── typing_extensions.py
+│       ├── lib-dynload/          # 64 个 CPython .so
+│       └── ...
+├── lib/
+│   ├── libpython3.11.so.1.0
+│   ├── libcrypto.so.3
+│   ├── libssl.so.3
+│   └── ...
+└── cacert.pem
+```
+
+### 下一步
+
+- [x] pydantic-core 2.41.5 交叉编译 + 板子验证
+- [ ] 安装 pydantic（纯 Python 包）
+- [ ] 交叉编译 cryptography（Rust + OpenSSL）
+- [ ] 安装 LangChain 依赖链（大部分纯 Python）
+- [ ] LangChain hello world：`ChatDeepSeek(...).invoke("hello")`
+
+### Rust 交叉编译通用模板（以后编别的 Rust 扩展照搬）
+
+```bash
+# 1. cargo config（一次性）
+# ~/.cargo/config.toml 已配好 linker
+
+# 2. 编译命令模板
+RUSTFLAGS="-L <libpython3.11.so所在目录> -l python3.11" \
+maturin build \
+  --target aarch64-unknown-linux-ohos \
+  --release \
+  --interpreter python3.11 \
+  --skip-auditwheel
+
+# 3. 产物在 target/wheels/*.whl，解压后把包目录丢进 site-packages
+```
 
 ---
 
@@ -493,10 +606,27 @@ LangChain/
 
 ### 当前状态
 
-动态链接 CPython 3.11.11 已在 RK3568 上跑通，dlopen .so 模块正常，HTTPS + DeepSeek API 正常。**下一步是交叉编译 pydantic-core（Rust）然后装 LangChain。**
+动态链接 CPython 3.11.11 + pydantic-core 2.41.5 已在 RK3568 上跑通。**下一步是装 pydantic + 编 cryptography + 装 LangChain。**
+
+### 运行命令模板
+
+```bash
+LD_LIBRARY_PATH=/data/local/tmp/lib \
+PYTHONHOME=/data/local/tmp/python-home \
+SSL_CERT_FILE=/data/local/tmp/cacert.pem \
+/data/local/tmp/python-home/bin/python3.11 xxx.py
+```
+
+### Rust 扩展交叉编译模板
+
+```bash
+RUSTFLAGS="-L /mnt/c/Users/lmxxf/openclaw_on_openharmony/LangChain/build/python-dynamic/data/local/tmp/python-home/lib -l python3.11" \
+maturin build --target aarch64-unknown-linux-ohos --release --interpreter python3.11 --skip-auditwheel
+```
 
 ---
 
 *OH 工程路径: `/home/lmxxf/oh6/source`*
 *GitHub: https://github.com/lmxxf/langchain-on-openharmony*
 *项目路径: `/home/lmxxf/work/openclaw_on_openharmony/LangChain/`*
+*pydantic-core 源码: `sources/pydantic-core/`*
