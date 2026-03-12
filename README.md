@@ -416,11 +416,15 @@ pip3 download agentscope anthropic dashscope mcp \
 for whl in wheels-agentscope/*.whl; do unzip -o "$whl" -d site-packages/; done
 ```
 
-**AgentScope 额外需要的 stub：**
+**AgentScope 额外需要的 stub（3 个）：**
 
-- **aiohttp stub**：PyPI 上 aiohttp 最后一个纯 Python wheel（3.6.2）和 Python 3.11 不兼容。dashscope SDK 顶层 import aiohttp 但只在 async 模式用。创建一个最小 stub 包（`aiohttp/__init__.py`），提供 `ClientSession`、`ClientTimeout`、`WSMsgType` 等符号，实际调用时抛 `NotImplementedError`。
-- **rpds stub**：`rpds-py` 是 Rust 扩展，jsonschema 依赖。写一个最小 stub（`HashTrieMap` 继承 `dict`，`HashTrieSet` 继承 `set`，`List` 继承 `tuple`），加 `convert()` 类方法和 `update()` 方法。
-- **numpy stub**：AgentScope 有 `import numpy`，但核心 Agent 功能不需要。stub 在 import 时只 warn，具体函数调用时才 raise。
+这三个依赖用 stub 而不是正经编译，不是因为编不动，是因为**分析完实际调用链后发现不需要编**：
+
+- **aiohttp stub**：dashscope SDK 顶层 `import aiohttp`，但 AgentScope 调 DeepSeek 走的是 openai SDK（走 httpx），根本不走 dashscope 的异步通道——aiohttp 只是被 import 了，没被调用。而且 PyPI 上最后一个纯 Python wheel（3.6.2）是 Python 3.8 时代的，和 3.11 API 断代了（`@asyncio.coroutine` 已删除），不是"编一下"就能用，得移植。stub 提供 `ClientSession`、`ClientTimeout`、`WSMsgType` 等符号，实际调用时抛 `NotImplementedError`。
+- **rpds-py stub**：jsonschema 启动时需要 `HashTrieMap`/`HashTrieSet`/`List` 三个容器类，但实际校验逻辑用不到 Rust 级别的性能。用 Python 内置的 dict/set/tuple 包一层就够。交叉编译一个 Rust 项目只为了让 jsonschema 启动时不报错，投入产出不划算。stub 加了 `convert()` 类方法和 `update()` 方法，足以支撑 referencing + jsonschema 启动。
+- **numpy stub**：AgentScope 有地方 `import numpy`，但只有音频处理和 embedding 缓存才真正调用。核心 Agent 功能（调 LLM API、消息传递、多体协同）完全不碰 numpy。numpy 交叉编译是大工程（C + Fortran + BLAS），不值得为一个用不到的功能去搞。stub 在 import 时只 warn，具体函数调用时才 raise。
+
+**stub 思维的核心**：区分"启动时需要"和"运行时需要"。很多 import 只是声明式的——模块顶层写了 `import xxx`，但实际执行路径不经过那段代码。只要 import 不报错，就够了。该糊弄的果断糊弄，把精力留给真正绕不过去的硬依赖（pydantic-core、cryptography 等）。
 
 然后按"快速部署"的步骤推上板子。
 
