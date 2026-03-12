@@ -1031,10 +1031,10 @@ full import scan 发现的可选缺失模块，都是 try/except 保护的，不
 
 **AgentScope**：全链路已跑通。`agentscope.init()` + `OpenAIChatModel` + DeepSeek API 调用成功。
 
-### 待整理
+### 部署包
 
-1. 把补装的包重新打包进 `build/agentscope-ohos-deps-v2.tar.gz`
-2. aiohttp stub 需要打进包里（目前只在板子上手动创建的）
+- **LangChain 基础包**：`build/langchain-ohos-deploy.tar.gz`（25MB）—— CPython + OpenSSL + LangChain 全依赖
+- **AgentScope 增量包**：`build/agentscope-ohos-deps-v2.tar.gz`（8.4MB）—— 叠加在基础包之上，含全部 AgentScope 依赖 + aiohttp/rpds/numpy stub，已清理 `__pycache__`
 
 ### 运行命令模板
 
@@ -1080,6 +1080,6 @@ $OHOS_CC -shared -fPIC -O2 \
 *项目路径: `/home/lmxxf/work/openclaw_on_openharmony/LangChain/`*
 *LangChain 源码: `sources/pydantic-core/`, `sources/uuid-utils/`, `sources/jiter/`, `sources/xxhash/`*
 *AgentScope 源码: `sources/tiktoken/`, `sources/cryptography/`, `sources/sources/regex-src/`*
-*AgentScope 依赖包: `build/agentscope-ohos-deps.tar.gz`（6.5MB，已提交 git）+ 补丁包 `build/agentscope-fix.tar.gz`*
-*板子上的修复脚本: `/data/local/tmp/fix_rpds3.py`（rpds stub v3）、`/data/local/tmp/fix_aiohttp_stub.py`（aiohttp stub）*
+*AgentScope 依赖包: `build/agentscope-ohos-deps-v2.tar.gz`（8.4MB，替代旧版 v1）*
+*Stub 脚本: `build/fix_aiohttp_stub.py`、`build/fix_rpds3.py`、`build/fix_numpy_stub.py`*
 *API key: `.api-key` 文件*
