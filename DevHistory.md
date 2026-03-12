@@ -901,13 +901,39 @@ tar xzf build/langchain-ohos-deploy.tar.gz -C /data/local/tmp/
 tar xzf agentscope-ohos-deps.tar.gz -C /data/local/tmp/python-home/lib/python3.11/site-packages/
 ```
 
-### 待验证
+### 板子验证（部分通过）
 
-- [ ] 推到板子上 `import agentscope` 是否成功
-- [ ] 跑 AgentScope Agent 调 DeepSeek API
-- [ ] numpy stub 是否影响核心功能
-- [ ] rpds-py stub 是否支撑 jsonschema 基本功能
-- [ ] cryptography 47.0.0 在 OHOS musl 上的兼容性
+已推到板子并验证。部署包 `build/agentscope-ohos-deps.tar.gz`（6.5MB）已提交 git。
+
+**注意**：OH 的 tar 不接受 `./` 前缀路径，需要用 `*` 打包而不是 `.`。
+
+**import 测试结果：**
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| cryptography 47.0.0 | ✅ | Rust+OpenSSL 在 OHOS musl 上正常 |
+| regex 2026.2.28 | ✅ | C 扩展正常 |
+| cffi 1.17.1 | ✅ | C 扩展正常，libffi 静态链入 |
+| tiktoken | ✅ | 需要补 `tiktoken_ext/` 目录（源码里有，打包时漏了） |
+| jsonschema/referencing | ✅ | rpds stub v3 解决（需要 `convert()` 类方法 + `HashTrieSet.update()`） |
+| agentscope | ❌ | 卡在缺 `sqlalchemy`（纯 Python wheel 没装进去） |
+
+**踩坑记录（板子验证阶段）：**
+
+| 坑 | 原因 | 解法 |
+|---|---|---|
+| OH tar 拒绝解压 | tar.gz 内路径以 `./` 开头，OH tar 报 `not under target` | 用 `tar czf xxx.tar.gz *` 打包（不带 `./` 前缀） |
+| `import agentscope` → numpy ImportError | numpy stub 直接在 `__init__.py` 里 raise | 改成 import 时只 warn，具体函数调用时才 raise |
+| `No module named 'tiktoken_ext'` | tiktoken 源码的 `tiktoken_ext/` 目录没打进依赖包 | 从 `sources/tiktoken/tiktoken_ext/` 补推 |
+| rpds `HashTrieMap.convert` 缺失 | referencing 库需要 `convert()` 类方法 | rpds stub v2 添加 |
+| rpds `HashTrieSet.update` 缺失 | referencing `Registry.combine()` 调用 set.update() | rpds stub v3：改 frozenset→set，加 update() |
+| 缺 sqlalchemy | 纯 Python wheel 下载了但没装进 site-packages | **待修复：下一个 session 补装** |
+
+**rpds stub 最终版（v3）要点：**
+- `HashTrieMap` 继承 `dict`，加 `convert()` 类方法
+- `HashTrieSet` 继承 `set`（不能用 frozenset，需要 update），加 `convert()`
+- `List` 继承 `tuple`，加 `convert()`、`push_front()`、`drop_first()`
+- 这三个类方法 + update 方法足以支撑 referencing + jsonschema 启动
 
 ### 源码位置
 
@@ -919,6 +945,75 @@ sources/
 └── _regex.cpython-311-aarch64-linux-ohos.so  # regex 编译产物
 ```
 
+## 2026-03-12 21:52 AgentScope 板子验证完成 ✅
+
+### 补装的缺失包
+
+上一个 session 编译完成但 `import agentscope` 还缺若干纯 Python 包。本次逐个补装：
+
+| 包 | 版本 | 来源 | 说明 |
+|---|---|---|---|
+| sqlalchemy | 2.0.41 | PyPI py3-none-any wheel | 纯 Python（greenlet 可选，不装） |
+| multidict | 6.7.1 | PyPI py3-none-any wheel | aiohttp 依赖 |
+| yarl | 1.23.0 | PyPI py3-none-any wheel | aiohttp 依赖 |
+| frozenlist | 1.8.0 | PyPI py3-none-any wheel | aiohttp/aiosignal 依赖 |
+| propcache | 0.4.1 | PyPI py3-none-any wheel | yarl 依赖 |
+| async_timeout | 5.0.1 | PyPI py3-none-any wheel | aiohttp 依赖 |
+| loguru | 0.7.3 | PyPI py3-none-any wheel | agentscope 日志 |
+| bidict | 0.23.1 | PyPI py3-none-any wheel | python-socketio 硬依赖 |
+| python-engineio | 4.13.1 | PyPI py3-none-any wheel | python-socketio 依赖 |
+| importlib-metadata | 8.7.1 | PyPI py3-none-any wheel | opentelemetry 需要 |
+
+### aiohttp 3.6.2 不兼容 Python 3.11
+
+PyPI 上 aiohttp 最后一个纯 Python wheel 是 3.6.2（Python 3.8 时代），和 Python 3.11 完全不兼容：
+- `asyncio.coroutines._DEBUG` 被删除
+- `@asyncio.coroutine` 装饰器被删除
+
+但 agentscope 本身不直接用 aiohttp——是 **dashscope SDK** 在顶层 `import aiohttp`。
+
+**解法：替换为 aiohttp stub 模块。** 只提供 dashscope 导入时需要的符号（`ClientSession`、`ClientTimeout`、`WSMsgType` 等），实际调用时抛 `NotImplementedError`。dashscope 的同步 API 走 requests，不需要 aiohttp。
+
+### 板子验证通过 ✅
+
+```
+$ LD_LIBRARY_PATH=/data/local/tmp/lib \
+  PYTHONHOME=/data/local/tmp/python-home \
+  SSL_CERT_FILE=/data/local/tmp/cacert.pem \
+  /data/local/tmp/python-home/bin/python3.11 test_agentscope2.py
+
+Python: 3.11.11 [Clang 15.0.4]
+agentscope: 1.0.16
+
+DeepSeek response: Hello from OpenHarmony—embracing a future of seamless, intelligent connectivity across all devices!
+Tokens: 16 in, 19 out
+
+=== AgentScope 1.0.16 + DeepSeek on OpenHarmony 6.0: SUCCESS ===
+```
+
+**全链路：OH RK3568 → Python 3.11.11 → AgentScope 1.0.16 → OpenAI SDK (async) → HTTPS/TLS → DeepSeek API → ChatResponse**
+
+### AgentScope 1.0.16 API 注意事项
+
+- `agentscope.init()` 不再接受 `model_configs` 参数（旧版 API）
+- Model 类在 `agentscope.model._openai_model.OpenAIChatModel`（不是旧版的 `OpenAIChatWrapper`）
+- `__call__` 是 **async**，需要 `asyncio.run()` 包裹
+- 参数名：`client_kwargs`（不是 `client_args`）、`generate_kwargs`（不是 `generate_args`）
+- Response 是 `ChatResponse`，`.content` 是 block list：`response.content[0]["text"]`
+
+### 可选的缺失模块（不影响核心功能）
+
+full import scan 发现的可选缺失模块，都是 try/except 保护的，不影响 `import agentscope`：
+
+| 模块 | 类型 | 说明 |
+|---|---|---|
+| `_bz2`, `_lzma` | CPython 未编 | 压缩格式，不影响功能 |
+| `greenlet` | C 扩展 | sqlalchemy async 用，同步模式不需要 |
+| `brotli/brotlicffi` | C 扩展 | HTTP 压缩，可选 |
+| `pygments` | 纯 Python | 语法高亮，可选 |
+| `tornado` | 混合 | WebSocket 备选，不用 |
+| `fqdn`, `rfc3987*`, `rfc3339_validator`, `webcolors`, `uri_template`, `isoduration` | 纯 Python | jsonschema format 验证器，可选 |
+
 ---
 
 ## 新 Session 恢复指南
@@ -928,25 +1023,18 @@ sources/
 ### 最终目标
 
 1. **LangChain on OH** ✅ 已完成。
-2. **AgentScope on OH** 🔧 交叉编译完成，待板子验证。
+2. **AgentScope on OH** ✅ 已完成。
 
 ### 当前状态
 
 **LangChain**：全链路已跑通。部署包 `build/langchain-ohos-deploy.tar.gz`（25MB）已提交 git。
 
-**AgentScope**：4 个原生扩展（tiktoken、cryptography、regex、cffi）已交叉编译完成。35 个纯 Python 依赖已下载打包。AgentScope 依赖包 `/tmp/agentscope-ohos-deps.tar.gz`（6.5MB）已打好，待推板子验证。numpy 用 stub 绕过（音频/embedding 缓存功能不可用，核心 Agent 功能正常）。
+**AgentScope**：全链路已跑通。`agentscope.init()` + `OpenAIChatModel` + DeepSeek API 调用成功。
 
-### 已知限制
+### 待整理
 
-- numpy 未编译（stub），音频处理和 embedding 文件缓存不可用
-- rpds-py 用最小 stub，jsonschema 高级功能可能受限
-- sounddevice 未处理（需要 PortAudio），音频输入不可用
-
-### 下一步
-
-- [ ] 把 `agentscope-ohos-deps.tar.gz` 推到板子，验证 `import agentscope`
-- [ ] 跑 AgentScope Agent 调 DeepSeek API
-- [ ] 验证通过后，合入部署包提交 git
+1. 把补装的包重新打包进 `build/agentscope-ohos-deps-v2.tar.gz`
+2. aiohttp stub 需要打进包里（目前只在板子上手动创建的）
 
 ### 运行命令模板
 
@@ -954,8 +1042,6 @@ sources/
 LD_LIBRARY_PATH=/data/local/tmp/lib \
 PYTHONHOME=/data/local/tmp/python-home \
 SSL_CERT_FILE=/data/local/tmp/cacert.pem \
-MULTIDICT_NO_EXTENSIONS=1 \
-YARL_NO_EXTENSIONS=1 \
 /data/local/tmp/python-home/bin/python3.11 xxx.py
 ```
 
@@ -994,4 +1080,6 @@ $OHOS_CC -shared -fPIC -O2 \
 *项目路径: `/home/lmxxf/work/openclaw_on_openharmony/LangChain/`*
 *LangChain 源码: `sources/pydantic-core/`, `sources/uuid-utils/`, `sources/jiter/`, `sources/xxhash/`*
 *AgentScope 源码: `sources/tiktoken/`, `sources/cryptography/`, `sources/sources/regex-src/`*
-*AgentScope 依赖包: `/tmp/agentscope-ohos-deps.tar.gz`（6.5MB，WSL 重启会丢，需重建）*
+*AgentScope 依赖包: `build/agentscope-ohos-deps.tar.gz`（6.5MB，已提交 git）+ 补丁包 `build/agentscope-fix.tar.gz`*
+*板子上的修复脚本: `/data/local/tmp/fix_rpds3.py`（rpds stub v3）、`/data/local/tmp/fix_aiohttp_stub.py`（aiohttp stub）*
+*API key: `.api-key` 文件*
