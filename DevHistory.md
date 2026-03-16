@@ -1105,9 +1105,132 @@ P7885（Cortex-A55, Linux 5.10.184, musl 1.2.5）部署时发现 6 个 `.so` 模
 
 ---
 
+## 2026-03-16 系统 App 内执行 Python
+
+### 目标
+
+在 OH 系统 App（设置）内启动 Python 子进程，不修改系统镜像。
+
+### 工程路径
+
+- **代码仓库**：https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568
+- **分支**：`langchain-python-test`
+- **本地路径**：`/home/lmxxf/oh6/source/applications/standard/openharmony6.0-ai-agent-rk3568/`
+- **软链接**：`/home/lmxxf/work/openharmony6.0-ai-agent-rk3568` → 上述路径
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `product/phone/src/main/cpp/exec_napi.cpp` | NAPI 模块：`runCommand(cmd)` 用 fork+execve 执行命令 |
+| `product/phone/src/main/ets/pages/pythonRunner.ets` | UI 页面：Test Echo / Run Python / Debug Info |
+| `build_exec_napi.sh` | 交叉编译 `libexec_napi.so`（20KB） |
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `product/phone/src/main/ets/pages/settingList.ets` | 主菜单加 "Python Runner" 入口 |
+| `product/phone/src/main/resources/base/profile/main_pages.json` | 注册 pythonRunner 路由 |
+| `AppScope/app.json5` | versionCode 改为 90000002（覆盖预装版本） |
+
+### 踩坑记录
+
+| 坑 | 根因 | 解法 |
+|---|---|---|
+| `process.runCmd()` 编译报错 | SDK 20 删除了该 API（安全收紧） | 改用 NAPI C++ fork+execve |
+| `popen()` 所有命令返回 127 | App 进程 PATH 环境变量为空 | fork 子进程前 `setenv("PATH", "/bin:/system/bin:...", 1)` |
+| 外部命令仍返回 127 | `popen` 本身在 OH App 进程行为异常 | 弃用 popen，改用 `fork + execve("/bin/sh", {"-c", cmd})` |
+| `ls /data/local/tmp/` → No such file | App 有独立 mount namespace，看不到宿主文件系统 | Python 部署到 App 沙箱 filesDir |
+| 普通 App 沙箱完全隔离 | mount namespace + 权限限制 | 改用系统 App（`com.ohos.settings`） |
+| `hdc install` version downgrade | 预装版本 minCompatibleVersionCode=90000001 | versionCode 改为 90000002 |
+
+### 关键发现
+
+1. **普通 App 不行，系统 App 可以**——普通 App 的 mount namespace 完全隔离，连 `/data/local/tmp/` 都看不到。系统 App 权限更高。
+
+2. **App 沙箱路径**：
+   - ArkTS 里用 `context.filesDir`：`/data/storage/el2/base/haps/phone/files`
+   - 物理路径（hdc shell 能看到）：`/data/app/el2/100/base/com.ohos.settings/haps/phone/files`
+   - 两者通过 mount namespace 映射，同一个目录
+
+3. **Python 部署到沙箱**：通过 `hdc file send` 推到物理路径，App 通过沙箱路径访问
+
+4. **fork+execve 可用**：SELinux 是 Permissive，沙箱内有执行权限的二进制能 exec
+
+### 技术路线
+
+```
+ArkTS UI (pythonRunner.ets)
+    │ import 'libexec_napi.so'
+    ↓
+C++ NAPI (exec_napi.cpp) ── fork() → child: setenv PATH → execve("/bin/sh", "-c", cmd)
+    │                                          │
+    │ pipe read stdout+stderr                  ↓
+    │                              LD_LIBRARY_PATH=.../python/lib
+    ↓                              PYTHONHOME=.../python
+UI 显示结果                        python3.11 -c "print(...)"
+```
+
+### 编译 & 部署
+
+```bash
+# 编译 NAPI .so
+cd /home/lmxxf/oh6/source/applications/standard/openharmony6.0-ai-agent-rk3568
+./build_exec_napi.sh              # 生成 product/phone/libs/arm64-v8a/libexec_napi.so
+
+# 编译 HAP（需要 node 18 + nvm，自带签名）
+./build.sh
+
+# 安装（hdc 在 Windows 侧）
+# 先 cp HAP 到 Windows 可访问路径，再 hdc install
+```
+
+### Python 部署到 App 沙箱
+
+```bash
+APPDIR="/data/app/el2/100/base/com.ohos.settings/haps/phone/files"
+
+# 创建目录
+hdc shell "mkdir -p $APPDIR/python/bin $APPDIR/python/lib"
+
+# 推 Python 二进制和库
+hdc file send python3.11 $APPDIR/python/bin/python3.11
+hdc file send libpython3.11.so.1.0 $APPDIR/python/lib/
+hdc file send libcrypto.so.3 $APPDIR/python/lib/
+hdc file send libssl.so.3 $APPDIR/python/lib/
+
+# 符号链接 + 权限
+hdc shell "cd $APPDIR/python/lib && ln -sf libpython3.11.so.1.0 libpython3.11.so"
+hdc shell "chmod -R 755 $APPDIR/python/"
+
+# 推标准库（tar 包解压到 python/lib/python3.11/）
+hdc file send pystdlib-min.tar.gz $APPDIR/python/lib/python3.11/
+hdc shell "cd $APPDIR/python/lib/python3.11 && tar xzf pystdlib-min.tar.gz && rm pystdlib-min.tar.gz"
+```
+
+### P7885 验证通过 ✅
+
+```
+设置 → Python Runner → Run Python
+Status: Python OK
+Output: Python 3.11.11 (main, Mar 11 2026, 15:46:41) [Clang 15.0.4]
+        Hello from OpenHarmony System App!
+```
+
+### 下一步
+
+- [ ] Python 运行时打进 HAP rawfile（自包含，不需要 hdc 手动推）
+- [ ] App 首次启动自动解压 Python 到沙箱目录
+- [ ] LangChain Agent 调用 demo（import langchain_core + 调 DeepSeek API）
+
+---
+
 *OH 工程路径: `/home/lmxxf/oh6/source`*
-*GitHub: https://github.com/lmxxf/langchain-on-openharmony*
+*GitHub (LangChain 部署): https://github.com/lmxxf/langchain-on-openharmony*
+*GitHub (系统 App): https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568 (branch: langchain-python-test)*
 *项目路径: `/home/lmxxf/work/openclaw_on_openharmony/LangChain/`*
+*系统 App 路径: `/home/lmxxf/oh6/source/applications/standard/openharmony6.0-ai-agent-rk3568/`*
 *LangChain 源码: `sources/pydantic-core/`, `sources/uuid-utils/`, `sources/jiter/`, `sources/xxhash/`*
 *AgentScope 源码: `sources/tiktoken/`, `sources/cryptography/`, `sources/sources/regex-src/`*
 *AgentScope 依赖包: `build/agentscope-ohos-deps-v2.tar.gz`（8.4MB，替代旧版 v1）*
