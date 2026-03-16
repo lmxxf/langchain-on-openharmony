@@ -1031,9 +1031,18 @@ full import scan 发现的可选缺失模块，都是 try/except 保护的，不
 
 **AgentScope**：全链路已跑通。`agentscope.init()` + `OpenAIChatModel` + DeepSeek API 调用成功。
 
+### 一键部署
+
+```bash
+# WSL 里跑，hdc 连上设备即可
+./deploy-langchain.sh
+```
+
+自动完成：检查连接 → patchelf 修复 → 打包 → 推送 → 解压 → 校时 → 验证。RK3568 / P7885 通用。
+
 ### 部署包
 
-- **LangChain 基础包**：`build/langchain-ohos-deploy.tar.gz`（25MB）—— CPython + OpenSSL + LangChain 全依赖
+- **LangChain 基础包**：从 `build/python-dynamic/` 现场打包（~24MB）—— CPython + OpenSSL + LangChain 全依赖
 - **AgentScope 增量包**：`build/agentscope-ohos-deps-v2.tar.gz`（8.4MB）—— 叠加在基础包之上，含全部 AgentScope 依赖 + aiohttp/rpds/numpy stub，已清理 `__pycache__`
 
 ### 运行命令模板
@@ -1072,6 +1081,27 @@ $OHOS_CC -shared -fPIC -O2 \
 
 **cryptography（Rust+C+OpenSSL，最复杂模板）：**
 需要额外设置 `CC_aarch64_unknown_linux_ohos`、`CFLAGS_aarch64_unknown_linux_ohos`、`OPENSSL_DIR/LIB_DIR/INCLUDE_DIR`、`PYO3_PYTHON`（指向宿主机 python3.11，需要 cffi+setuptools）。详见上方编译记录。
+
+---
+
+## 2026-03-16 P7885 设备部署 + 一键部署脚本
+
+详见 [DevHistory-P7885/README.md](DevHistory-P7885/README.md)
+
+### 摘要
+
+P7885（Cortex-A55, Linux 5.10.184, musl 1.2.5）部署时发现 6 个 `.so` 模块（`_sha1`, `_sha256`, `_sha3`, `_sha512`, `_hashlib`, `_ssl`）缺少 `libpython3.11.so` 依赖，导致 Signal 11。这些模块由 CPython Makefile 的 `Setup.stdlib` 编译，之前 `BLDSHARED` 的 fix 没覆盖到。RK3568 上没暴露是因为 musl 版本更宽松。
+
+**修复**：`patchelf --add-needed libpython3.11.so`
+
+**一键部署脚本**：`deploy-langchain.sh`——WSL 里跑，自动完成 patchelf 修复 → 打包 → 推送 → 解压 → 校时 → 验证。RK3568 和 P7885 通用。
+
+### 已验证设备
+
+| 设备 | 芯片 | 内核 | musl | 状态 |
+|------|------|------|------|------|
+| RK3568 | Cortex-A55 | Linux 6.6.101 | — | ✅ 首次验证通过 |
+| P7885 | Cortex-A55 | Linux 5.10.184 | 1.2.5 | ✅ patchelf 修复后通过 |
 
 ---
 
