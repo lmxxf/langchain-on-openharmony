@@ -1232,10 +1232,57 @@ Output: Python 3.11.11 (main, Mar 11 2026, 15:46:41) [Clang 15.0.4]
 
 HAP 大小：33MB（含 26MB Python 运行时 + 5MB llama NAPI + 2MB App 本体）
 
-### 下一步
+---
 
-- [ ] LangChain site-packages 也打进 rawfile（pydantic-core、openai SDK 等）
-- [ ] App 内调 DeepSeek API（通过 Python LangChain）
+## 2026-03-17 LangChain + DeepSeek API 在 App 内调通
+
+### 目标
+
+在系统 App 内通过 Python LangChain 调用 DeepSeek API，完全自包含。
+
+### 实现
+
+- 将 LangChain 全依赖链（site-packages 23MB）合并进 `python-runtime.tar.gz`（31MB）
+- site-packages 从板子上已验证的 `/data/local/tmp/` 环境直接打包拉取
+- certifi 包自带 `cacert.pem`，SSL 证书验证不需要手动设 `SSL_CERT_FILE`
+- pythonRunner.ets 新增 **Run LangChain + DeepSeek** 紫色按钮
+
+### 包含的 site-packages
+
+pydantic 2.12.5 + pydantic_core 2.41.5（Rust .so）、langchain_core 1.2.18、openai 2.26.0、langsmith、httpx、httpcore、jiter（Rust .so）、uuid_utils（Rust .so）、xxhash（C .so）、certifi、anyio、h11、sniffio、requests、urllib3、tenacity、packaging、typing_extensions、typing_inspection、annotated_types 等 30+ 个包
+
+### 踩坑
+
+| 坑 | 根因 | 解法 |
+|---|---|---|
+| SSL certificate not yet valid | 板子时间 2008 年（刷机后重置） | `hdc shell 'date MMDDHHmmYYYY.SS'` 校时 |
+| site-packages 散装在多个 tar 包里 | 之前分批推的 | 直接从板子上已验证的环境打包拉取 |
+| PowerShell 转义 Python 单引号/括号 | bash→powershell→sh 三层转义 | 写 .py 脚本推上去执行 |
+
+### P7885 验证通过 ✅
+
+```
+设置 → Python Runner → Install Python (31MB) → Run LangChain + DeepSeek
+  Python 3.11.11
+  langchain_core: OK
+  openai SDK: OK
+  Response: Hello from OpenHarmony, the open-source operating system shaping the future of smart devices!
+  Type: AIMessage
+  === LangChain + DeepSeek on OpenHarmony: SUCCESS ===
+```
+
+HAP 大小：41MB（含 31MB Python+LangChain 运行时）
+
+### 完整链路
+
+```
+安装 HAP (41MB)
+  → 点 Install Python → rawfile 31MB 自动解压到 App 沙箱
+  → 点 Run LangChain + DeepSeek
+  → NAPI fork+execve → Python 3.11
+  → langchain_core + openai SDK → HTTPS/TLS → DeepSeek API
+  → AIMessage → UI 显示
+```
 
 ---
 
