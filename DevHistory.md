@@ -1286,6 +1286,78 @@ HAP 大小：41MB（含 31MB Python+LangChain 运行时）
 
 ---
 
+## 2026-03-17 ArkTS ↔ Python 双向管道通信（Agent Daemon 模式）
+
+详见 [openharmony6.0-ai-agent-rk3568 README (Python Runner)](https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568#-python-runner)
+
+### 目标
+
+Python 不再是"跑完就退"的一次性脚本，而是常驻子进程（daemon），通过 stdin/stdout 管道与 ArkTS 双向通信。ArkTS 能调 Python（发消息），Python 也能"调"ArkTS（发 tool_call 请求，ArkTS 执行后返回结果）。
+
+### 架构
+
+```
+ArkTS UI
+    │ sendMessage(json)
+    ↓
+C++ NAPI (exec_napi.cpp)
+    │ write(stdin_fd) / read(stdout_fd)
+    ↓
+Python daemon (agent_daemon.py)
+    │ stdin.readline() → 处理 → stdout.write(json)
+    │ 需要设备能力时 → stdout 写 tool_call
+    ↓
+NAPI 读到 tool_call → ArkTS 执行（拍照/蓝牙/...）→ sendMessage(tool_result)
+    ↓
+Python 收到 tool_result → 继续处理 → 输出最终 response
+```
+
+### 通信协议（JSON Lines）
+
+每条消息一行 JSON，以 `\n` 分隔。
+
+**ArkTS → Python：**
+- `{"type": "chat", "message": "用户输入"}`
+- `{"type": "tool_result", "tool": "camera", "result": {"path": "...", "status": "ok"}}`
+- `{"type": "shutdown"}`
+
+**Python → ArkTS：**
+- `{"type": "ready", "python_version": "3.11.11"}`
+- `{"type": "response", "content": "回复内容"}`
+- `{"type": "tool_call", "tool": "camera", "params": {"action": "capture"}}`
+
+### 新增 NAPI 函数
+
+| 函数 | 说明 |
+|------|------|
+| `startDaemon(pythonBase, scriptPath)` | fork Python 子进程，建立 stdin/stdout 管道 |
+| `sendMessage(json)` | 写一行 JSON 到 Python 的 stdin |
+| `readMessage()` | 从 Python 的 stdout 读一行 JSON（阻塞） |
+| `stopDaemon()` | SIGTERM + SIGKILL 终止子进程 |
+| `isDaemonRunning()` | 检查子进程是否还活着 |
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `resources/rawfile/agent_daemon.py` | Python 消息循环脚本 |
+
+### P7885 验证通过 ✅
+
+```
+Start Agent Daemon → daemon: {"type": "ready", "python_version": "3.11.11"}
+[You] hello → [Agent] Echo: hello
+[You] 帮我拍个照 → [Tool Call] camera → [Agent] Photo captured! Path: .../fake_photo.jpg
+```
+
+### 下一步
+
+- [ ] 把模拟拍照换成真的 `@ohos.multimedia.camera` API
+- [ ] Python daemon 集成 LangChain Agent + DeepSeek Tool Calling
+- [ ] 更多 tool：蓝牙、亮度、传感器等（复用已有的 MCP 实现）
+
+---
+
 *OH 工程路径: `/home/lmxxf/oh6/source`*
 *GitHub (LangChain 部署): https://github.com/lmxxf/langchain-on-openharmony*
 *GitHub (系统 App): https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568 (branch: langchain-python-test)*
