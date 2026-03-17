@@ -1114,7 +1114,7 @@ P7885（Cortex-A55, Linux 5.10.184, musl 1.2.5）部署时发现 6 个 `.so` 模
 ### 工程路径
 
 - **代码仓库**：https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568
-- **分支**：`langchain-python-test`
+- **分支**：`main`（已从 langchain-python-test 合入）
 - **本地路径**：`/home/lmxxf/oh6/source/applications/standard/openharmony6.0-ai-agent-rk3568/`
 - **软链接**：`/home/lmxxf/work/openharmony6.0-ai-agent-rk3568` → 上述路径
 
@@ -1199,7 +1199,7 @@ Output: Python 3.11.11 (main, Mar 11 2026, 15:46:41) [Clang 15.0.4]
 
 ## 2026-03-17 Python 运行时自包含（rawfile 打包 + 自动解压）
 
-详见 [openharmony6.0-ai-agent-rk3568 README](https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568/tree/langchain-python-test#-python-runner)
+详见 [openharmony6.0-ai-agent-rk3568 README](https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568#-python-runner)
 
 ### 目标
 
@@ -1360,7 +1360,7 @@ Start Agent Daemon → daemon: {"type": "ready", "python_version": "3.11.11"}
 
 *OH 工程路径: `/home/lmxxf/oh6/source`*
 *GitHub (LangChain 部署): https://github.com/lmxxf/langchain-on-openharmony*
-*GitHub (系统 App): https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568 (branch: langchain-python-test)*
+*GitHub (系统 App): https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568*
 *项目路径: `/home/lmxxf/work/openclaw_on_openharmony/LangChain/`*
 *系统 App 路径: `/home/lmxxf/oh6/source/applications/standard/openharmony6.0-ai-agent-rk3568/`*
 *LangChain 源码: `sources/pydantic-core/`, `sources/uuid-utils/`, `sources/jiter/`, `sources/xxhash/`*
