@@ -1186,29 +1186,6 @@ cd /home/lmxxf/oh6/source/applications/standard/openharmony6.0-ai-agent-rk3568
 # 先 cp HAP 到 Windows 可访问路径，再 hdc install
 ```
 
-### Python 部署到 App 沙箱
-
-```bash
-APPDIR="/data/app/el2/100/base/com.ohos.settings/haps/phone/files"
-
-# 创建目录
-hdc shell "mkdir -p $APPDIR/python/bin $APPDIR/python/lib"
-
-# 推 Python 二进制和库
-hdc file send python3.11 $APPDIR/python/bin/python3.11
-hdc file send libpython3.11.so.1.0 $APPDIR/python/lib/
-hdc file send libcrypto.so.3 $APPDIR/python/lib/
-hdc file send libssl.so.3 $APPDIR/python/lib/
-
-# 符号链接 + 权限
-hdc shell "cd $APPDIR/python/lib && ln -sf libpython3.11.so.1.0 libpython3.11.so"
-hdc shell "chmod -R 755 $APPDIR/python/"
-
-# 推标准库（tar 包解压到 python/lib/python3.11/）
-hdc file send pystdlib-min.tar.gz $APPDIR/python/lib/python3.11/
-hdc shell "cd $APPDIR/python/lib/python3.11 && tar xzf pystdlib-min.tar.gz && rm pystdlib-min.tar.gz"
-```
-
 ### P7885 验证通过 ✅
 
 ```
@@ -1218,11 +1195,47 @@ Output: Python 3.11.11 (main, Mar 11 2026, 15:46:41) [Clang 15.0.4]
         Hello from OpenHarmony System App!
 ```
 
+---
+
+## 2026-03-17 Python 运行时自包含（rawfile 打包 + 自动解压）
+
+详见 [openharmony6.0-ai-agent-rk3568 README](https://github.com/lmxxf/openharmony6.0-ai-agent-rk3568/tree/langchain-python-test#-python-runner)
+
+### 目标
+
+不再需要 `hdc file send` 手动推 Python 到板子。Python 运行时打进 HAP 的 rawfile，App 内一键解压。
+
+### 实现
+
+- `python-runtime.tar.gz`（26MB）放入 `resources/rawfile/`，打进 HAP
+- pythonRunner.ets 加 **Install Python** 按钮：`getRawFileContent` 读 rawfile → `fs.writeSync` 写到 filesDir → `tar xzf` 解压 → `mv python-home python` → `chmod 755`
+- 用 `runCmd('ls .../python/bin/python3.11')` 判断是否已解压（`fs.accessSync` 行为不可靠）
+- **Reset Python** 按钮清理沙箱，重新解压
+
+### 踩坑
+
+| 坑 | 根因 | 解法 |
+|---|---|---|
+| `aboutToAppear` 里 async 解压不生效 | ArkTS `aboutToAppear` 不等 async，Promise 链丢了 | 改成手动点按钮触发解压 |
+| `fs.accessSync` 检测不准 | 文件不存在时没抛异常 | 改用 `runCmd('ls ...')` 检测 |
+| OpenSSL 没打进 tar | 打包时 `lib/` 路径不在 `python-dynamic/` 目录下 | 把 libssl/libcrypto 复制到 `python-home/lib/` 再打包 |
+| 解压后 mv 路径太多容易出错 | tar 解压出 python-home/ 和 lib/ 两个目录 | 统一放 python-home/ 下，解压后一条 `mv python-home python` |
+
+### P7885 验证通过 ✅
+
+```
+设置 → Python Runner → Install Python (23MB)
+  rawfile read: 24006554 bytes → written to disk → tar: OK → Ready (installed!)
+设置 → Python Runner → Run Python
+  Status: Python OK
+```
+
+HAP 大小：33MB（含 26MB Python 运行时 + 5MB llama NAPI + 2MB App 本体）
+
 ### 下一步
 
-- [ ] Python 运行时打进 HAP rawfile（自包含，不需要 hdc 手动推）
-- [ ] App 首次启动自动解压 Python 到沙箱目录
-- [ ] LangChain Agent 调用 demo（import langchain_core + 调 DeepSeek API）
+- [ ] LangChain site-packages 也打进 rawfile（pydantic-core、openai SDK 等）
+- [ ] App 内调 DeepSeek API（通过 Python LangChain）
 
 ---
 
