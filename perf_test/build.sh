@@ -14,9 +14,9 @@ $CLANG --target=aarch64-unknown-linux-ohos --sysroot="$SYSROOT" \
 echo "Done: $SCRIPT_DIR/fb_perf ($(du -h "$SCRIPT_DIR/fb_perf" | cut -f1))"
 
 echo ""
-echo "部署命令："
-echo "  powershell.exe -Command \"hdc file send '$(wslpath -w "$SCRIPT_DIR/fb_perf")' '/data/local/tmp/fb_perf'\""
-echo "  powershell.exe -Command \"hdc shell 'chmod 755 /data/local/tmp/fb_perf && /data/local/tmp/fb_perf'\""
+echo "部署并运行..."
+powershell.exe -Command "hdc file send '$(wslpath -w "$SCRIPT_DIR/fb_perf")' '/data/local/tmp/fb_perf'" 2>&1
+powershell.exe -Command "hdc shell 'chmod 755 /data/local/tmp/fb_perf && /data/local/tmp/fb_perf --show'" 2>&1
 echo ""
 echo "查看日志："
 echo "  powershell.exe -Command \"hdc shell 'cat /data/local/tmp/fb_perf.log'\""
