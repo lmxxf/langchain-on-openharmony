@@ -1350,11 +1350,89 @@ Start Agent Daemon → daemon: {"type": "ready", "python_version": "3.11.11"}
 [You] 帮我拍个照 → [Tool Call] camera → [Agent] Photo captured! Path: .../fake_photo.jpg
 ```
 
+---
+
+## 2026-03-26 AgentScope on OH 系统 App（agent-scope 分支）
+
+### 目标
+
+正式将 AgentScope 移植到 OH 系统 App，独立干净分支，不混入 LangChain/AI 助手等旧代码。
+
+### 工程
+
+- **分支**：`agent-scope`（基于 OH 原始 Settings 代码 reset）
+- **本地路径**：`/home/lmxxf/oh6/source/applications/standard/openharmony6.0-ai-agent-rk3568/`
+- 从 main 分支 cherry-pick 的文件：`build.sh`、`hvigorw`、`hvigor/`、`build-profile.json5`、`signature/`、`build_exec_napi.sh`、`exec_napi.cpp`
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `product/phone/src/main/ets/pages/agentScope.ets` | AgentScope UI 页面 |
+| `product/phone/src/main/cpp/exec_napi.cpp` | NAPI 模块（复用，daemon stderr 改为 /dev/null） |
+| `product/phone/src/main/resources/rawfile/python-runtime.tar.gz` | Python 3.11 + LangChain + AgentScope 全依赖（39MB） |
+| `product/phone/src/main/resources/rawfile/agent_daemon.py` | AgentScope daemon（async model 调用） |
+| `build_exec_napi.sh` | 交叉编译脚本 |
+
+### AgentScope 1.0.16 API 变化（vs 旧版）
+
+| 旧版 | 1.0.16 | 说明 |
+|------|--------|------|
+| `agentscope.models` | `agentscope.model` | 模块名从复数变单数 |
+| `agentscope.agents` | `agentscope.agent` | 同上 |
+| `DialogAgent` | `ReActAgent` / `AgentBase` | DialogAgent 被移除 |
+| `OpenAIChatWrapper` | `OpenAIChatModel` | 类名变了 |
+| `agentscope.init(model_configs=[...])` | `agentscope.init()` + 手动创建 model | init 不再接受 model_configs |
+| `model(msgs)` 同步 | `await model(msgs)` async | model.__call__ 变成 async |
+| `Msg` 对象传给 model | dict 列表传给 model | model 期望 OpenAI 格式 `[{"role":"user","content":"..."}]` |
+| `response.content` 是字符串 | `response.content` 是列表 `[{"type":"text","text":"..."}]` | ChatResponse 结构变了 |
+
+### 依赖补充
+
+| 缺失包 | 类型 | 解法 |
+|--------|------|------|
+| `httpx_sse` | 纯 Python | pip download + 解压到 site-packages |
+| `attrs` / `attr` | 纯 Python | pip download（attrs wheel 同时包含两个包） |
+| `exceptiongroup` | 纯 Python | pip download |
+| `fastmcp` | 纯 Python（依赖链太重） | **写 stub**——AgentScope 核心不需要 MCP server |
+
+### 踩坑
+
+| 坑 | 根因 | 解法 |
+|---|---|---|
+| `No module named 'httpx_sse'` | mcp 包依赖 | pip download 补装 |
+| `No module named 'attrs'` | jsonschema/mcp 依赖 | pip download 补装 |
+| `No module named 'fastmcp'` | mcp.server 顶层 import | 写 stub（raise NotImplementedError） |
+| `No module named 'agentscope.models'` | 1.0.16 重构为 `agentscope.model` | 改 import 路径 |
+| `model()` 返回 coroutine | 1.0.16 的 model.__call__ 是 async | 用 `asyncio.run_until_complete()` |
+| `TypeError: argument of type 'Msg' is not iterable` | model 期望 dict 列表不是 Msg 对象 | 传 `[{"role":"user","content":"..."}]` |
+| `response.text` → KeyError | ChatResponse 没有 `.text`，`.content` 是 list | 解析 `response.content[0]['text']` |
+| `[Error] {}` 看不到错误信息 | `str(e)` 对某些异常返回空 | 改用 `repr(e)` |
+| daemon 消息错位 | OpenSSL warning 写到 stderr，stderr redirect 到 stdout 管道 | daemon 的 stderr redirect 到 /dev/null |
+| daemon 旧脚本缓存 | rawfile 更新了但 filesDir 的旧文件还在 | 手动 `rm agent_daemon.py` 或在代码里强制覆盖 |
+| **daemon 子进程网络不通** | **App 进程 fork 的子进程继承 App 网络沙箱，uid 20010012 被限制** | **P7885 特有问题？待 RK3568 验证** |
+
+### P7885 验证状态
+
+- [x] Install AgentScope（rawfile 39MB 解压）✅
+- [x] Verify Python + AgentScope（import agentscope OK，版本 1.0.16）✅
+- [x] Start Agent Daemon（ready 消息正确返回）✅
+- [ ] **Chat 调用 DeepSeek API → Connection error** ❌（P7885 网络沙箱限制，daemon 子进程网络不通。hdc shell root 权限能通，App uid 不行）
+
+### 关键发现：daemon 子进程网络沙箱
+
+```
+hdc shell (uid=0, root) → Python → socket.connect("api.deepseek.com") → OK ✅
+App fork (uid=20010012) → Python daemon → socket.connect("api.deepseek.com") → FAIL ❌
+```
+
+App 进程 fork 出来的子进程继承 App 的网络命名空间。root (hdc shell) 不受限，App uid 受限。这可能是 P7885 特有的安全策略——待 RK3568验证。
+
 ### 下一步
 
-- [ ] 把模拟拍照换成真的 `@ohos.multimedia.camera` API
-- [ ] Python daemon 集成 LangChain Agent + DeepSeek Tool Calling
-- [ ] 更多 tool：蓝牙、亮度、传感器等（复用已有的 MCP 实现）
+- [ ] RK3568 上验证 daemon 网络是否正常
+- [ ] 如果 RK3568 也不通，考虑改架构：Python daemon 不直接调 API，而是通过 ArkTS 代理网络请求
+- [ ] commit + push agent-scope 分支
 
 ---
 
