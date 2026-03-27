@@ -1497,3 +1497,24 @@ daemon: {"type": "ready", "status": "ok", "agentscope_version": "1.0.16"}
 *AgentScope 依赖包: `build/agentscope-ohos-deps-v2.tar.gz`（8.4MB，替代旧版 v1）*
 *Stub 脚本: `build/fix_aiohttp_stub.py`、`build/fix_rpds3.py`、`build/fix_numpy_stub.py`*
 *API key: `.api-key` 文件*
+
+---
+
+## 2026-03-27 A2A 协议多 Agent 通信
+
+每个 Agent 跑在独立的 HTTP server（uvicorn + starlette），通过 A2A HTTP 通信。
+
+- 分析师 Agent → `http://127.0.0.1:18001/chat`
+- 评审 Agent → `http://127.0.0.1:18002/chat`
+- 主 daemon 用 `httpx.post()` 调两个 server，协调讨论流程
+- ArkTS 显示每条消息来源端口 `(A2A HTTP :18001)`
+- `a2a-sdk 0.3.25` 已装入 site-packages
+- 跨设备只需改 `127.0.0.1` 为对方 IP
+
+### P7885 验证通过 ✅
+
+```
+[分析师 (A2A HTTP :18001)] AI不会完全取代程序员...
+[评审 (A2A HTTP :18002)] 分析师观点总体合理，但未充分强调...
+[A2A 讨论结束]
+```
