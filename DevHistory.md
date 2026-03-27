@@ -1518,3 +1518,11 @@ daemon: {"type": "ready", "status": "ok", "agentscope_version": "1.0.16"}
 [评审 (A2A HTTP :18002)] 分析师观点总体合理，但未充分强调...
 [A2A 讨论结束]
 ```
+
+---
+
+## 2026-03-27 编译脚本整理
+
+`build_python_from_source.sh`（506 行）：从源码完整编译 Python 3.11 + AgentScope 全依赖链。`python-runtime.tar.gz`（39MB）从 git 移除，由脚本生成。
+
+编译流程：`./build_python_from_source.sh` → `./build_exec_napi.sh` → `./build.sh`
