@@ -1417,22 +1417,35 @@ Start Agent Daemon → daemon: {"type": "ready", "python_version": "3.11.11"}
 - [x] Install AgentScope（rawfile 39MB 解压）✅
 - [x] Verify Python + AgentScope（import agentscope OK，版本 1.0.16）✅
 - [x] Start Agent Daemon（ready 消息正确返回）✅
-- [ ] **Chat 调用 DeepSeek API → Connection error** ❌（P7885 网络沙箱限制，daemon 子进程网络不通。hdc shell root 权限能通，App uid 不行）
+- [x] ~~Chat 调用 DeepSeek API → Connection error~~ **已修复** ✅
 
-### 关键发现：daemon 子进程网络沙箱
+---
+
+## 2026-03-27 网络问题修复 + RK3568 验证
+
+### 网络问题根因
+
+昨天花了一下午排查 daemon 子进程网络不通：以为是 App 网络沙箱、网络命名空间、军工设备限制……
+
+**实际根因：`module.json5` 没声明 `ohos.permission.INTERNET`。加一行就好了。**
+
+OH 的网络权限控制在内核层面拦截 socket 连接。App 进程（包括 fork 的子进程）没声明 INTERNET 权限就直接拒绝。hdc shell 是 root 不受限——这导致了误判。
+
+### RK3568 验证
+
+- SELinux 默认 Enforcing → `setenforce 0` 后 fork+execve 可用
+- **import agentscope → OOM (Signal 7)**——2GB 内存不够加载 60+ 个包
+- RK3568 跑不动 AgentScope 全家桶
+
+### P7885 全链路打通 ✅
 
 ```
-hdc shell (uid=0, root) → Python → socket.connect("api.deepseek.com") → OK ✅
-App fork (uid=20010012) → Python daemon → socket.connect("api.deepseek.com") → FAIL ❌
+daemon: {"type": "ready", "status": "ok", "agentscope_version": "1.0.16"}
+[You] hello
+[Agent] 你好！😊 很高兴见到你！有什么我可以帮助你的吗？
 ```
 
-App 进程 fork 出来的子进程继承 App 的网络命名空间。root (hdc shell) 不受限，App uid 受限。这可能是 P7885 特有的安全策略——待 RK3568验证。
-
-### 下一步
-
-- [ ] RK3568 上验证 daemon 网络是否正常
-- [ ] 如果 RK3568 也不通，考虑改架构：Python daemon 不直接调 API，而是通过 ArkTS 代理网络请求
-- [ ] commit + push agent-scope 分支
+**完整链路：OH 系统 App (ArkTS) → NAPI 管道 → Python daemon → AgentScope 1.0.16 → OpenAIChatModel (async) → HTTPS → DeepSeek API → 回复 → 管道 → UI 显示**
 
 ---
 
