@@ -1526,3 +1526,23 @@ daemon: {"type": "ready", "status": "ok", "agentscope_version": "1.0.16"}
 `build_python_from_source.sh`（506 行）：从源码完整编译 Python 3.11 + AgentScope 全依赖链。`python-runtime.tar.gz`（39MB）从 git 移除，由脚本生成。
 
 编译流程：`./build_python_from_source.sh` → `./build_exec_napi.sh` → `./build.sh`
+
+---
+
+## 2026-04-02 ANR 修复：主线程阻塞问题
+
+### 问题
+
+App 启动后闪退，faultlog 显示 `THREAD_BLOCK_6S` / `appfreeze`。
+
+**根因**：`startAgent()` 和 `sendChat()` 在 ArkTS 主线程里直接调 `readMessage()`（同步阻塞）。Python 冷启动加载 AgentScope 60+ 个包需要 5-10 秒，超过系统 6 秒 ANR 超时，进程被 kill。
+
+### 修复
+
+**NAPI 层**（`exec_napi.cpp`）：新增 `tryReadMessage(timeoutMs: number): string`，用 `select()` 实现带超时的非阻塞读。超时返回空字符串，有数据时读一行返回。
+
+**ArkTS 层**（`agentScope.ets`）：`startAgent()` 和 `sendChat()` 改为 `setInterval` 每 300ms 轮询 `tryReadMessage(200)`，主线程完全不阻塞。`stopAgent()` 加 `clearInterval` 清理 timer。
+
+### P7885 验证通过 ✅
+
+正常启动，Start Agent → 等待加载 → AgentScope running → 正常对话，不再闪退。
