@@ -14,7 +14,7 @@ OH RK3568 → CPython 3.11.11 → AgentScope 1.0.16 → OpenAIChatModel (async)
 
 ## 快速部署（已有编译产物）
 
-3 条命令把 LangChain + AgentScope 跑在 OH 开发板上。
+3 条命令把 LangChain + AgentScope 跑在 OH 开发板上，**不需要本地编译**。
 
 ### 前提
 
@@ -25,7 +25,7 @@ OH RK3568 → CPython 3.11.11 → AgentScope 1.0.16 → OpenAIChatModel (async)
 
 **1. 推基础包到板子**
 
-`build/langchain-ohos-deploy.tar.gz`（25MB）包含：CPython 3.11 + OpenSSL + LangChain 全依赖链。
+`build/langchain-ohos-deploy.tar.gz`（25MB）包含：CPython 3.11 解释器、OpenSSL `.so`、LangChain 全依赖链，解压后直接就有 `python-home/` 和 `lib/` 两个目录。**不需要单独准备 `lib/`**，tar 包里已经有了。
 
 ```bash
 cd LangChain/
@@ -127,6 +127,8 @@ asyncio.run(main())
 ```
 
 ### 板子上的最终目录结构
+
+解压 `langchain-ohos-deploy.tar.gz` 后直接得到以下结构，`lib/` 已在包内，无需额外操作：
 
 ```
 /data/local/tmp/
