@@ -1546,3 +1546,31 @@ App 启动后闪退，faultlog 显示 `THREAD_BLOCK_6S` / `appfreeze`。
 ### P7885 验证通过 ✅
 
 正常启动，Start Agent → 等待加载 → AgentScope running → 正常对话，不再闪退。
+
+---
+
+## 2026-04-02 Nacos 服务注册与发现
+
+### 背景
+
+之前 A2A 多 Agent 通信地址硬编码 `127.0.0.1:18001/18002`，只能同设备内通信。引入 Nacos 做服务注册/发现，为跨设备 Agent 通信铺路。
+
+### 方案
+
+- **Nacos Server**：WSL 上 Docker 跑 `nacos-server:v2.5.2` standalone 模式
+- **Python 客户端**：不用 `nacos-sdk-python`（强依赖 grpcio，OH 上编不了），直接用 requests 调 Nacos v2 REST API
+- **Windows 端口转发**：`netsh interface portproxy` 让 OH 设备通过 Windows IP 访问 WSL 的 Nacos
+
+### 改动（openharmony6.0-ai-agent-rk3568 仓库，agent-scope 分支）
+
+| 文件 | 改动 |
+|------|------|
+| `rawfile/api_config.json` | 新增 `nacos_url` |
+| `rawfile/agent_daemon.py` | 新增 Nacos 注册/发现/心跳/注销，启动时从 config 消息读 nacos 开关 |
+| `agentScope.ets` | 新增 "Nacos Discovery" Toggle 开关 |
+| `nacos-manual.md` | Nacos 操作手册 |
+| `test_nacos.py` | WSL 本地测试脚本 |
+
+### P7885 验证通过 ✅
+
+两个 Agent 注册到 WSL 的 Nacos，通过 Nacos 发现对方地址后 A2A HTTP 调用，`via` 字段显示 `Nacos -> http://192.168.33.173:18001`。关掉 Toggle 则 fallback 到 localhost 直连。
