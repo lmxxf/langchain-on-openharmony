@@ -167,11 +167,26 @@ asyncio.run(main())
 
 ### 前提
 
-- OpenHarmony 源码树（需要其中的 Clang 15 工具链和 musl sysroot）
+**必须有 OpenHarmony 完整源码树**（几十 GB），从中取 Clang 15 工具链和 musl sysroot。没有源码树就没有交叉编译器，无法进行后续步骤。
+
+- OpenHarmony 6.0 完整源码树
 - Linux 宿主机（WSL2 / Ubuntu）
 - Rust 1.94+（`rustup target add aarch64-unknown-linux-ohos`）
 - maturin（`pip3 install maturin`）
 - wget、tar、make、perl
+
+### 源码说明
+
+`sources/` 目录不在仓库里（体积太大），需要自行下载：
+
+- CPython 3.11.11：https://www.python.org/ftp/python/3.11.11/Python-3.11.11.tgz
+- OpenSSL 3.3.2：https://www.openssl.org/source/openssl-3.3.2.tar.gz
+- zlib 1.3.1：https://zlib.net/zlib-1.3.1.tar.gz
+- 其余 Rust/C 扩展源码：各自 GitHub clone
+
+CPython 需要打两个 patch：
+- OH 官方 patch：`$OH_SRC/third_party/python/patches/cross_compile_support_ohos.patch`（修 config.sub 识别 ohos）
+- 本项目的 patch：`build/configure.patched`、`build/pyconfig.h.patched`（修 musl 缺失符号等）
 
 ### 环境变量
 
