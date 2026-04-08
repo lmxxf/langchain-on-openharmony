@@ -1574,3 +1574,102 @@ App 启动后闪退，faultlog 显示 `THREAD_BLOCK_6S` / `appfreeze`。
 ### P7885 验证通过 ✅
 
 两个 Agent 注册到 WSL 的 Nacos，通过 Nacos 发现对方地址后 A2A HTTP 调用，`via` 字段显示 `Nacos -> http://192.168.33.173:18001`。关掉 Toggle 则 fallback 到 localhost 直连。
+
+---
+
+## 2026-04-08 指挥官+小兵编排 & Google A2A 兼容
+
+### 背景
+
+产品需求：演示"指挥官编排多智能体"场景——1 个指挥官分派任务给 3 个小兵，其中 2 个能侦查+打击，1 个只能打击。同时需要兼容 Linux 上的 AgentScope 原生版对接。
+
+### 架构变更
+
+之前：2 个平级 Agent（分析师、评审）按顺序轮流说。
+
+现在：
+
+```
+指挥官（Commander，主线程，无 HTTP server）
+├── 侦察兵甲 :18001  abilities=[recon, strike]
+├── 侦察兵乙 :18002  abilities=[recon, strike]
+└── 火力兵   :18003  abilities=[strike]
+```
+
+指挥官是编排者，住在 daemon 主线程，直接调 DeepSeek API 思考。小兵是执行者，各自跑 HTTP server 等着被调用。
+
+### 编排流程（6 个阶段）
+
+```
+Phase 1: 指挥官看兵力清单（名字+abilities），看到 3 个区域（A/B/C），
+         输出 JSON 分配方案。自主判断火力兵没有 recon 能力，只派侦察兵
+Phase 2: 侦察兵甲→A区，侦察兵乙→B区（并行 ThreadPoolExecutor）
+Phase 3: C区没人去，指挥官派侦察兵甲补侦 C区（串行）
+Phase 4: 三区情报齐了，指挥官下达打击命令
+Phase 5: 三人全上并行打击
+Phase 6: 指挥官汇总战果
+```
+
+一轮对话共 9 次 DeepSeek API 调用，所有调用带重试（3 次，间隔 2 秒）。
+
+### 关键设计
+
+- **指挥官自主决策**：代码把兵力清单（名字+abilities）喂给指挥官，它自己判断谁能侦查谁不能，不是代码 if/else 写死的
+- **区域约束**：3 个区域（可配置）每个必须有人侦查，2 人 vs 3 区域 → 需要补侦
+- **能力标签**：`abilities: ["recon", "strike"]`，指挥官据此分配任务
+
+### Google A2A 协议兼容
+
+每个小兵的 HTTP server 新增两个标准端点，与 Linux 上的 AgentScope 原生版对接：
+
+| 端点 | 协议 | 调用者 |
+|------|------|--------|
+| `POST /chat` | 自定义 | 本机指挥官编排 |
+| `POST /tasks/send` | Google A2A (JSON-RPC 2.0) | 外部 AgentScope |
+| `GET /.well-known/agent.json` | Google A2A AgentCard | 外部服务发现 |
+| `GET /info` | 自定义 | 状态查询 |
+
+两套协议内部共用同一个 `call_model()`，只是入口出口的 JSON 格式不同。
+
+### 配置格式变更
+
+`api_config.json` 从 `agents[]` 改为 `commander{}` + `soldiers[]`：
+
+```json
+{
+  "commander": {
+    "name": "指挥官",
+    "prompt": "...",
+    "areas": ["A区", "B区", "C区"]
+  },
+  "soldiers": [
+    {"name": "侦察兵甲", "service": "soldier-scout-a", "port": 18001,
+     "abilities": ["recon", "strike"], "prompt": "..."},
+    {"name": "侦察兵乙", "service": "soldier-scout-b", "port": 18002,
+     "abilities": ["recon", "strike"], "prompt": "..."},
+    {"name": "火力兵", "service": "soldier-fire", "port": 18003,
+     "abilities": ["strike"], "prompt": "..."}
+  ]
+}
+```
+
+### UI 改动（agentScope.ets）
+
+- 新增 **Clear Log** 按钮（Stop Agent 旁边），清空输出区
+- 新增 **快捷提示词按钮**（"分析敌方阵地弱点"、"制定突袭方案"），点击直接发送，免去在 OH 设备上打字的痛苦
+
+### 改动文件（openharmony6.0-ai-agent-rk3568 仓库）
+
+| 文件 | 改动 |
+|------|------|
+| `rawfile/agent_daemon.py` | 重写编排逻辑：指挥官+小兵 6 阶段、区域侦查、能力判断、Google A2A 端点、重试机制 |
+| `rawfile/api_config.json.example` | 新格式：commander + soldiers + areas |
+| `agentScope.ets` | 新增 Clear Log 按钮、快捷提示词按钮 |
+| `AppScope/app.json5` | versionCode 90000010 → 90000030 |
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `侦查打击A2A协议设计.md` | 完整的编排流程、协议格式、提示词、通信数据示例 |
+| `agent-scope能干啥.md` | AgentScope 1.0.16 框架完整能力清单，我们用了什么、没用什么、为什么 |
