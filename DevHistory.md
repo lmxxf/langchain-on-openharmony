@@ -1673,3 +1673,37 @@ Phase 6: 指挥官汇总战果
 |------|------|
 | `侦查打击A2A协议设计.md` | 完整的编排流程、协议格式、提示词、通信数据示例 |
 | `agent-scope能干啥.md` | AgentScope 1.0.16 框架完整能力清单，我们用了什么、没用什么、为什么 |
+
+---
+
+## 2026-04-09：RK3568 跑通 + Verify 异步化
+
+### RK3568 首次完整跑通
+
+之前一直以为 RK3568（2GB 内存）跑不了 AgentScope，报各种 Permission denied 错误被误判为 OOM。
+
+**根因**：SELinux = Enforcing。App sandbox 里 `execve()` 被 SELinux 策略拦截，所有 shell 命令（tar、mv、chmod、rm）全部 exit code 127。
+
+**解法**：`hdc shell setenforce 0` 切 Permissive 模式。重启后会恢复 Enforcing，开发阶段每次开机要重新执行。
+
+生产环境正式解法需要在 OH 源码 SELinux policy 中给 app domain 加 execve 权限，但开发阶段 setenforce 0 够用。
+
+关掉 SELinux 后，Install Python → Start Agent → 侦查打击全流程一次跑通。2GB 内存完全够用。
+
+### Verify Python 按钮异步化
+
+**问题**：点 "Verify Python + AgentScope" 按钮闪退（ANR）。
+
+**原因**：`testPython()` 用 `runCommand()`（one-shot 模式）= fork + execve + waitpid 同步阻塞。`import agentscope` 耗时数秒，UI 线程卡死超过 ANR 阈值。而 `startAgent()` 不闪退是因为走的 daemon 模式：fork 瞬间返回 + setInterval 轮询。
+
+**修复**：testPython 分两种情况：
+
+1. **daemon 没在跑**（首次 verify）：写一个 `verify.py` 小脚本，走 startDaemon 临时启动，setInterval 轮询结果，完成后 stopDaemon 清理
+2. **daemon 在跑**（agent 运行中 verify）：通过已有的 pipe 发 `{"type":"verify"}` 消息，agent_daemon.py 回 `verify_ack` 带版本信息，不杀 daemon
+
+**改动文件**：
+
+| 文件 | 改动 |
+|------|------|
+| `agentScope.ets` | testPython() 从同步 runCommand 改为 daemon 模式异步轮询，区分 daemon 在跑/不在跑两种路径 |
+| `rawfile/agent_daemon.py` | 新增 `verify` 消息类型，返回 Python 版本和 AgentScope 版本 |
