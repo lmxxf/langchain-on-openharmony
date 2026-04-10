@@ -1707,3 +1707,53 @@ Phase 6: 指挥官汇总战果
 |------|------|
 | `agentScope.ets` | testPython() 从同步 runCommand 改为 daemon 模式异步轮询，区分 daemon 在跑/不在跑两种路径 |
 | `rawfile/agent_daemon.py` | 新增 `verify` 消息类型，返回 Python 版本和 AgentScope 版本 |
+
+---
+
+## 2026-04-10：Python 系统组件化
+
+### 里程碑
+
+Python 3.11 运行时从 app 自带 tar.gz（~50MB）升级为 **OH 系统镜像内置组件**。刷机即用，零安装步骤。
+
+### 做了什么
+
+在 `~/openharmony6/source/`（个人 OH6 源码树）上完成 Python 子系统集成：
+
+1. **`third_party/python/` 改造**：
+   - `bundle.json` 加 deps 和 sub_component
+   - 新增 `BUILD.gn`：用 `ohos_prebuilt_executable` / `ohos_prebuilt_shared_library` / `ohos_prebuilt_etc` + foreach 安装全部文件（python3.11 可执行文件、libpython、OpenSSL、53 个 lib-dynload .so、612 个 stdlib .py、4690 个 site-packages 文件）
+   - 新增 `stdlib_files.gni`、`site_packages_files.gni`（脚本生成的文件路径列表）
+   - 新增 `prebuilt/aarch64/`（交叉编译好的二进制 + 标准库 + 第三方包）
+
+2. **`vendor/hihope/rk3568/config.json`**：thirdparty subsystem 加 `python` component
+
+3. **App 侧改动**（`openharmony6.0-ai-agent-rk3568` 仓库 `agent-scope-subsystem` 分支）：
+   - `exec_napi.cpp`：`startDaemon` 从 2 参数改 1 参数，Python 路径写死系统路径
+   - `agentScope.ets`：删除 Install/Reset/tar.gz 解压，app 瘦身 ~50MB
+   - 删除 `rawfile/python-runtime.tar.gz`
+
+### 系统路径
+
+```
+/system/bin/python3.11
+/system/lib64/libpython3.11.so.1.0 + symlinks
+/system/lib64/libssl.so.3, libcrypto.so.3
+/system/lib64/python-home/lib/python3.11/          (stdlib)
+/system/lib64/python-home/lib/python3.11/lib-dynload/  (C 扩展)
+/system/lib64/python-home/lib/python3.11/site-packages/  (agentscope 等)
+```
+
+`PYTHONHOME=/system/lib64/python-home`
+
+### 关键发现
+
+- OH arm64 镜像库在 `/system/lib64/`，不是 `/system/lib/`
+- OH 自带 OpenSSL 叫 `libssl_openssl.z.so`，ABI 不兼容标准 `libssl.so.3`，需自带
+- OH 构建系统没有"安装整个目录"支持，用 foreach + `ohos_prebuilt_etc` 逐文件安装（612 + 4690 = 5302 个目标）
+- `--build-target` 只编译不打包，必须全量编才进 system.img
+- system 分区 1.4GB，加入 Python 全套后剩约 20MB
+
+### RK3568 验证通过 ✅
+
+全量编译 → 刷机 → stdlib 10 项 OK → agentscope 1.0.16 import OK → 侦查打击全流程跑通
