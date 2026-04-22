@@ -1757,3 +1757,52 @@ Python 3.11 运行时从 app 自带 tar.gz（~50MB）升级为 **OH 系统镜像
 ### RK3568 验证通过 ✅
 
 全量编译 → 刷机 → stdlib 10 项 OK → agentscope 1.0.16 import OK → 侦查打击全流程跑通
+
+---
+
+## 2026-04-22：python-runtime 增补 protobuf + libffi（A2A/ReActAgent 支持）
+
+### 背景
+
+OH 指挥官模式要用 ReActAgent + A2AAgent + WellKnownAgentCardResolver，import 链路触发了两个之前没用到的依赖：
+1. `google.protobuf` — A2A gRPC 模块（`a2a/grpc/a2a_pb2.py`）需要
+2. `_ctypes` → `libffi` — A2A 模块 import 链路间接触发
+
+### protobuf
+
+之前打包时 `pip download protobuf` 下到的是纯 Python 4.25.9，但 `a2a_pb2.py` 需要 `from google.protobuf import runtime_version`，这是 protobuf 5.x 才有的。
+
+**解法**：升级到 protobuf 5.29.6（`py3-none-any.whl`，纯 Python，173KB）。
+
+### libffi
+
+`_ctypes.cpython-311-aarch64-linux-ohos.so` 编译时动态链接了 libffi（`ffi_closure_free` 等符号 UND），但 python-runtime 里没有 `libffi.so`。之前手工编排模式不 import A2A 组件，不触发 `_ctypes`，所以没发现。
+
+**尝试过的方案**：
+1. 编 `libffi.so` 放到 `python/lib/` — 失败，OH musl linker namespace 隔离不认 LD_LIBRARY_PATH
+2. 放到 `/system/lib64/` — 失败，同上
+3. `--whole-archive` 重链 `_ctypes.so` — 失败，新 .so 的 DT_NEEDED 里带了编译时 WSL 绝对路径
+4. `.o` 文件重新链接 — 失败，编译产物没保留 `.o`
+
+**最终解法**：`patchelf` 修改原始 `_ctypes.so`：
+- `patchelf --add-needed libffi.so` — 添加 libffi 依赖
+- `patchelf --add-rpath '$ORIGIN'` — 让 linker 在 .so 自身所在目录搜索
+- `libffi.so`（从 `libffi.a` 用 `--whole-archive` 转出）放到 `lib-dynload/` 同目录
+
+### 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `build/agentscope-ohos-deps-v2.tar.gz` | protobuf 4.25.9 → 5.29.6 |
+| python-runtime.tar.gz 内容变更 | `google/protobuf/` 升级到 5.29.6 |
+| python-runtime.tar.gz 内容变更 | `lib-dynload/libffi.so` 新增（100KB） |
+| python-runtime.tar.gz 内容变更 | `lib-dynload/_ctypes.*.so` patchelf 添加 libffi.so NEEDED + $ORIGIN RPATH |
+
+### 踩坑备忘
+
+| 坑 | 根因 | 修法 |
+|:---|:---|:---|
+| `ffi_closure_free: symbol not found` | `_ctypes.so` 动态链接 libffi，runtime 里没有 | patchelf + libffi.so 放同目录 |
+| `cannot import 'runtime_version' from 'google.protobuf'` | protobuf 4.x 没有 `runtime_version` 模块 | 升级到 5.29.6 |
+| libffi.so 放 `python/lib/` 不生效 | OH musl linker namespace 隔离，不认 LD_LIBRARY_PATH 里的非白名单 .so | `$ORIGIN` RPATH + 放 lib-dynload 同目录 |
+| `--whole-archive` 重链 .so 带编译时绝对路径 | 把 .so 当输入重新链接，DT_NEEDED 记录了原始路径 | 不重链，用 patchelf 修改 |
